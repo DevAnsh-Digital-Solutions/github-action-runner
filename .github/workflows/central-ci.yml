@@ -1,0 +1,65 @@
+# .github/workflows/central-ci.yml
+#
+# Reusable workflow: the single entry point consumer repos call into.
+# Phase 0 wires no checks yet — it only validates the `language` input and
+# fails fast on an unsupported value. Later phases add jobs here that call
+# out to the composite actions under .github/actions/, each gated behind
+# its own boolean flag per CLAUDE.md's architecture rules.
+name: Central CI
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "Language to run checks for. One of: js, ts, python, flutter, unity."
+        type: string
+        required: true
+      working_dir:
+        description: "Directory containing the project to check, relative to the consumer repo root."
+        type: string
+        required: false
+        default: '.'
+      runner_label:
+        description: "Runner label the jobs execute on."
+        type: string
+        required: false
+        default: 'ubuntu-latest'
+
+# Default to least privilege; individual jobs may narrow further but never widen.
+permissions:
+  contents: read
+
+jobs:
+  validate-inputs:
+    name: Validate inputs
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check language is supported
+        shell: bash
+        # Pass inputs via env rather than interpolating into the script body,
+        # so a caller-supplied value can never be read as shell syntax.
+        env:
+          LANGUAGE: ${{ inputs.language }}
+        run: |
+          set -euo pipefail
+
+          # Single source of truth for supported languages — keep this list
+          # in sync with README.md's supported-languages section.
+          supported_languages="js ts python flutter unity"
+
+          is_supported="false"
+          for lang in $supported_languages; do
+            if [ "${lang}" = "${LANGUAGE}" ]; then
+              is_supported="true"
+              break
+            fi
+          done
+
+          if [ "${is_supported}" != "true" ]; then
+            echo "::error::Unsupported language '${LANGUAGE}'. Supported values: ${supported_languages}"
+            exit 1
+          fi
+
+          echo "Language '${LANGUAGE}' is supported."
