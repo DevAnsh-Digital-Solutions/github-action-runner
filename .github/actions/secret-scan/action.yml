@@ -1,0 +1,146 @@
+# .github/actions/secret-scan/action.yml
+#
+# What: Runs Gitleaks (installed here as a checksum-verified pinned binary —
+#       not the gitleaks-action wrapper, which requires a paid license for
+#       organization use) and uploads SARIF. Scans only the PR's diff range
+#       on pull_request events, and full history on push.
+# Languages: none — this check is language-agnostic and takes no `language`
+#       input.
+# Needs: the calling job's checkout step to have fetched enough history —
+#       full history (fetch-depth: 0) for push events, and at minimum both
+#       the PR's base and head commits for pull_request events. No secrets
+#       required beyond the default GITHUB_TOKEN (used only for the SARIF
+#       upload).
+# Exits non-zero on: an event type other than pull_request/push, gitleaks
+#       producing no/unparseable report output (binary download/checksum
+#       failure, or insufficient git history for the requested range — a
+#       crash, distinct from real findings), or real secret findings.
+name: Secret Scan
+description: Runs Gitleaks on the PR diff (pull_request) or full history (push), and uploads SARIF.
+
+inputs:
+  working_dir:
+    description: "Directory to scan, relative to repo root."
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate trigger event
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        case "${EVENT_NAME}" in
+          pull_request|push) ;;
+          *) die "secret-scan only supports pull_request and push events, per docs/CHECK-POLICY.md. Got '${EVENT_NAME}'." ;;
+        esac
+
+    - name: Install gitleaks
+      id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        require_cmd curl
+        require_cmd tar
+        require_cmd sha256sum
+        version="8.30.1"
+        checksum="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        archive="gitleaks_${version}_linux_x64.tar.gz"
+        tmp_dir="$(mktemp -d)"
+        curl -sSL --fail -o "${tmp_dir}/${archive}" "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" \
+          || die "failed to download gitleaks v${version} from github.com — check network access / GitHub status."
+        if ! echo "${checksum}  ${tmp_dir}/${archive}" | sha256sum -c - >/dev/null 2>&1; then
+          die "gitleaks v${version} download failed checksum verification. Refusing to execute a binary that doesn't match the known-good SHA256."
+        fi
+        tar -xzf "${tmp_dir}/${archive}" -C "${tmp_dir}" gitleaks
+        chmod 0755 "${tmp_dir}/gitleaks"
+        echo "bin_path=${tmp_dir}/gitleaks" >> "$GITHUB_OUTPUT"
+
+    - name: Determine scan range
+      id: range
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_PATH: ${{ github.event_path }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        require_cmd node
+        if [ "${EVENT_NAME}" = "pull_request" ]; then
+          base_sha="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pull_request.base.sha)' "${EVENT_PATH}")"
+          head_sha="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pull_request.head.sha)' "${EVENT_PATH}")"
+          if [ -z "${base_sha}" ] || [ -z "${head_sha}" ]; then
+            die "could not read pull_request.base.sha / pull_request.head.sha from the event payload."
+          fi
+          echo "log_opts=--log-opts=${base_sha}..${head_sha}" >> "$GITHUB_OUTPUT"
+        else
+          # push: full history, no --log-opts restriction.
+          echo "log_opts=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Run gitleaks
+      id: run
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        BIN_PATH: ${{ steps.install.outputs.bin_path }}
+        LOG_OPTS: ${{ steps.range.outputs.log_opts }}
+      run: |
+        set -uo pipefail # no -e: classification is based on whether valid output was produced, not the raw exit code
+        # LOG_OPTS is deliberately unquoted-if-empty: gitleaks rejects an
+        # empty --log-opts="" value, so we must omit the flag entirely for
+        # the push (full-history) case rather than pass an empty one.
+        # shellcheck disable=SC2086
+        "${BIN_PATH}" git --report-format sarif --report-path secret-scan.sarif ${LOG_OPTS} .
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Classify result
+      id: classify
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        # gitleaks exits 0 = clean, 1 = leaks found OR an internal error —
+        # it does not distinguish the two by exit code alone. We use
+        # whether a report file was actually produced as the tell: a crash
+        # (bad --log-opts range from shallow history, etc.) happens before
+        # the report gets written.
+        if [ -z "${EXIT_CODE}" ] || { [ "${EXIT_CODE}" -ne 0 ] && [ "${EXIT_CODE}" -ne 1 ]; }; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "gitleaks exited with code '${EXIT_CODE:-unknown}'. Check the 'Run gitleaks' step's log above for its own error output."
+        elif [ "${EXIT_CODE}" -eq 1 ] && [ ! -s secret-scan.sarif ]; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "gitleaks reported a non-zero exit but produced no secret-scan.sarif — treating this as a crash (e.g. insufficient git history for the requested diff range; make sure the checkout step used fetch-depth: 0), not secret findings."
+        elif [ "${EXIT_CODE}" -eq 1 ]; then
+          echo "outcome=findings" >> "$GITHUB_OUTPUT"
+          summary "### Secret scan: findings reported"
+          summary "Gitleaks found potential secrets. See the SARIF results in the Security tab, or the annotations on this run. Rotate any real credentials immediately, even after removing them from history."
+        else
+          echo "outcome=pass" >> "$GITHUB_OUTPUT"
+          summary "### Secret scan: clean"
+          summary "No secrets detected."
+        fi
+
+    - name: Upload SARIF
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+      with:
+        sarif_file: ${{ inputs.working_dir }}/secret-scan.sarif
+
+    - name: Enforce secret-scan result
+      if: steps.classify.outputs.outcome != 'pass'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Failing this check: secret-scan outcome was '${{ steps.classify.outputs.outcome }}'. See the annotations above for details."
+        exit 1

@@ -1,0 +1,200 @@
+# .github/actions/unit-test/action.yml
+#
+# What: Runs the project's test suite (auto-detecting Jest vs Vitest) and
+#       publishes a pass/fail summary to $GITHUB_STEP_SUMMARY. Always
+#       collects coverage (lcov + json-summary reporters) as a side effect
+#       and uploads it as the "coverage-report" workflow artifact, which
+#       .github/actions/coverage/ downloads and parses — coverage is a
+#       pure parser with no test-running inputs of its own, so this is the
+#       only place a coverage file gets produced.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: jest or vitest as a devDependency (or config file), unless
+#        `test_command` overrides detection entirely. No secrets required.
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, no test
+#        runner detected (and no override given), both jest and vitest
+#        detected ambiguously, the runner itself crashing (distinct from
+#        failing tests), or real test failures.
+name: Unit Test (JS/TS)
+description: Runs Jest or Vitest and publishes a summary; always collects coverage.
+
+inputs:
+  language:
+    description: "Language to test. Only js/ts are implemented in this version."
+    required: true
+  working_dir:
+    description: "Directory containing the project to test, relative to repo root."
+    required: false
+    default: '.'
+  test_command:
+    description: "Optional override command to run instead of auto-detected jest/vitest."
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Validate language is implemented
+      shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        case "${LANGUAGE}" in
+          js|ts)
+            ;; # implemented by this action
+          python|flutter|unity)
+            die "language '${LANGUAGE}' is not yet implemented in this version"
+            ;;
+          *)
+            die "unsupported language '${LANGUAGE}'. Supported values: js ts python flutter unity"
+            ;;
+        esac
+
+    - name: Detect test runner
+      id: detect
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        TEST_COMMAND: ${{ inputs.test_command }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+
+        if [ -n "${TEST_COMMAND}" ]; then
+          echo "runner=custom" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        require_file package.json
+
+        has_jest="false"
+        has_vitest="false"
+        if grep -qE '"jest"\s*:' package.json || [ -f jest.config.js ] || [ -f jest.config.ts ] || [ -f jest.config.mjs ] || [ -f jest.config.cjs ] || [ -f jest.config.json ]; then
+          has_jest="true"
+        fi
+        if grep -qE '"vitest"\s*:' package.json || [ -f vitest.config.js ] || [ -f vitest.config.ts ] || [ -f vitest.config.mjs ] || [ -f vitest.config.cjs ]; then
+          has_vitest="true"
+        fi
+
+        if [ "${has_jest}" = "true" ] && [ "${has_vitest}" = "true" ]; then
+          die "both jest and vitest were detected in '$(pwd)' — ambiguous. Pass the test_command input to pick one explicitly."
+        elif [ "${has_jest}" = "true" ]; then
+          echo "runner=jest" >> "$GITHUB_OUTPUT"
+        elif [ "${has_vitest}" = "true" ]; then
+          echo "runner=vitest" >> "$GITHUB_OUTPUT"
+        else
+          die "no test runner detected in '$(pwd)' (checked package.json dependencies and jest.config.*/vitest.config.* files). Add jest or vitest as a devDependency, or pass the test_command input."
+        fi
+
+    - name: Run tests
+      id: run
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        RUNNER: ${{ steps.detect.outputs.runner }}
+        TEST_COMMAND: ${{ inputs.test_command }}
+      run: |
+        set -uo pipefail # no -e: we capture the runner's exit code ourselves below
+        case "${RUNNER}" in
+          custom)
+            # Consumer-controlled command from this repo's own workflow config
+            # (not PR-supplied content), so running it directly is safe.
+            bash -c "${TEST_COMMAND}"
+            ;;
+          jest)
+            npx --no-install jest --ci \
+              --coverage --coverageReporters=lcov --coverageReporters=json-summary \
+              --json --outputFile=jest-results.json
+            ;;
+          vitest)
+            npx --no-install vitest run \
+              --coverage --coverage.reporter=lcov --coverage.reporter=json-summary \
+              --reporter=json --outputFile=vitest-results.json
+            ;;
+        esac
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Classify result
+      id: classify
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        RUNNER: ${{ steps.detect.outputs.runner }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+
+        results_file=""
+        case "${RUNNER}" in
+          jest) results_file="jest-results.json" ;;
+          vitest) results_file="vitest-results.json" ;;
+        esac
+
+        if [ -z "${EXIT_CODE}" ]; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "the test command did not report an exit code at all — treating this as a crash."
+        elif [ "${EXIT_CODE}" -eq 0 ]; then
+          echo "outcome=pass" >> "$GITHUB_OUTPUT"
+        elif [ "${EXIT_CODE}" -ne 1 ]; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "the test command exited with code '${EXIT_CODE}', which is neither a clean pass (0) nor a normal test-failure exit (1) — treating this as a crash. Check the 'Run tests' step's log above."
+        elif [ -n "${results_file}" ] && [ ! -s "${results_file}" ]; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "the test command exited non-zero but produced no '${results_file}' — treating this as a crash (e.g. a config error or no matching test files), not test failures."
+        else
+          echo "outcome=findings" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Publish test summary
+      if: steps.classify.outputs.outcome != 'crash'
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        RUNNER: ${{ steps.detect.outputs.runner }}
+        OUTCOME: ${{ steps.classify.outputs.outcome }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+
+        results_file=""
+        case "${RUNNER}" in
+          jest) results_file="jest-results.json" ;;
+          vitest) results_file="vitest-results.json" ;;
+        esac
+
+        summary "### Unit tests: ${OUTCOME}"
+        if [ -n "${results_file}" ] && [ -f "${results_file}" ]; then
+          table="$(node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const total = r.numTotalTests ?? 0;
+            const passed = r.numPassedTests ?? 0;
+            const failed = r.numFailedTests ?? 0;
+            const skipped = r.numPendingTests ?? r.numTodoTests ?? 0;
+            console.log(`| Total | Passed | Failed | Skipped |\n|---|---|---|---|\n| ${total} | ${passed} | ${failed} | ${skipped} |`);
+          ' "${results_file}")"
+          summary "${table}"
+        else
+          summary "(custom test_command was used; no structured results file to summarize.)"
+        fi
+
+    - name: Upload coverage artifact
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: coverage-report
+        path: ${{ inputs.working_dir }}/coverage/
+        if-no-files-found: warn # a custom test_command may not produce coverage/ at all
+        retention-days: 7
+
+    - name: Enforce test result
+      if: steps.classify.outputs.outcome != 'pass'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Failing this check: unit-test outcome was '${{ steps.classify.outputs.outcome }}'. See the annotations above for details."
+        exit 1

@@ -1,0 +1,108 @@
+# .github/actions/setup/action.yml
+#
+# What: Installs the JS/TS toolchain (Node.js) and project dependencies.
+#       Not a "check" itself — a prerequisite step other check actions in
+#       this job run after. Detects the package manager from whichever
+#       lockfile is present and uses its matching install command.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: a lockfile (package-lock.json, pnpm-lock.yaml, or yarn.lock) in
+#        `working_dir`. No secrets required.
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, a
+#        missing lockfile, or the install command itself failing (bad
+#        dependency, registry/network failure, etc).
+name: Setup (JS/TS)
+description: Installs Node.js and project dependencies for a JS/TS project.
+
+inputs:
+  language:
+    description: "Language to set up. Only js/ts are implemented in this version."
+    required: true
+  working_dir:
+    description: "Directory containing package.json / the lockfile, relative to repo root."
+    required: false
+    default: '.'
+  node_version:
+    description: "Node.js version to install, passed straight to actions/setup-node."
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate language is implemented
+      shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        case "${LANGUAGE}" in
+          js|ts)
+            ;; # implemented by this action
+          python|flutter|unity)
+            die "language '${LANGUAGE}' is not yet implemented in this version"
+            ;;
+          *)
+            die "unsupported language '${LANGUAGE}'. Supported values: js ts python flutter unity"
+            ;;
+        esac
+
+    - name: Detect package manager
+      id: detect
+      shell: bash
+      env:
+        WORKING_DIR: ${{ inputs.working_dir }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        manager="$(detect_package_manager "${WORKING_DIR}")"
+        echo "manager=${manager}" >> "$GITHUB_OUTPUT"
+        # actions/setup-node's built-in cache only understands 'npm' without
+        # extra setup (pnpm/yarn caching needs the tool itself on PATH
+        # first, which we don't have yet at this point). Only opt into its
+        # cache for npm; pnpm/yarn installs below still work, just uncached.
+        if [ "${manager}" = "npm" ]; then
+          echo "cache=npm" >> "$GITHUB_OUTPUT"
+        else
+          echo "cache=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node_version }}
+        cache: ${{ steps.detect.outputs.cache }}
+        cache-dependency-path: ${{ inputs.working_dir }}/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        MANAGER: ${{ steps.detect.outputs.manager }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        require_cmd node "actions/setup-node above should have installed it"
+        case "${MANAGER}" in
+          npm)
+            # npm: reproducible install straight from package-lock.json
+            require_cmd npm
+            npm ci
+            ;;
+          pnpm)
+            # pnpm ships via corepack (bundled with Node >=16.9); activate
+            # it before installing so `pnpm` is resolvable at all.
+            corepack enable
+            corepack prepare pnpm@latest --activate
+            pnpm install --frozen-lockfile
+            ;;
+          yarn)
+            # yarn (classic or berry, both handled by corepack) install
+            # respecting the committed lockfile.
+            corepack enable
+            yarn install --frozen-lockfile
+            ;;
+          *)
+            die "internal error: unrecognized package manager '${MANAGER}' from the detect step"
+            ;;
+        esac

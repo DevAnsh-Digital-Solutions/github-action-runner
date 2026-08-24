@@ -1,10 +1,16 @@
 # .github/workflows/central-ci.yml
 #
 # Reusable workflow: the single entry point consumer repos call into.
-# Phase 0 wires no checks yet — it only validates the `language` input and
-# fails fast on an unsupported value. Later phases add jobs here that call
-# out to the composite actions under .github/actions/, each gated behind
-# its own boolean flag per CLAUDE.md's architecture rules.
+# Wires the composite actions under .github/actions/ into jobs, each gated
+# behind its own boolean flag per CLAUDE.md's architecture rules. Trigger
+# and branch policy stay entirely in the consumer's own ci.yml — this
+# workflow only knows about `language` and the enable_* flags.
+#
+# Phase 1 implements checks for js/ts only (lint, unit-test, coverage,
+# dependency-scan, secret-scan). python/flutter/unity are accepted by
+# validate-inputs (they're on the project's eventual roadmap) but every
+# check's own composite action hard-fails them with "not yet implemented
+# in this version" rather than silently skipping or passing.
 name: Central CI
 
 on:
@@ -24,8 +30,39 @@ on:
         type: string
         required: false
         default: 'ubuntu-latest'
+      enable_lint:
+        description: "Run the lint check."
+        type: boolean
+        required: false
+        default: true
+      enable_unit_test:
+        description: "Run the unit-test check. Must be true if enable_coverage is true."
+        type: boolean
+        required: false
+        default: true
+      enable_coverage:
+        description: "Run the coverage check. Requires enable_unit_test: true, since coverage is parsed from the unit-test run's output."
+        type: boolean
+        required: false
+        default: true
+      enable_dependency_scan:
+        description: "Run the dependency-scan (SCA) check."
+        type: boolean
+        required: false
+        default: true
+      enable_secret_scan:
+        description: "Run the secret-scan check."
+        type: boolean
+        required: false
+        default: true
+      coverage_threshold:
+        description: "Minimum required 'lines' coverage percentage, when enable_coverage is true."
+        type: number
+        required: false
+        default: 80
 
-# Default to least privilege; individual jobs may narrow further but never widen.
+# Default to least privilege; individual jobs narrow further where they can
+# and widen only where a specific step (e.g. SARIF upload) needs it.
 permissions:
   contents: read
 
@@ -63,3 +100,125 @@ jobs:
           fi
 
           echo "Language '${LANGUAGE}' is supported."
+      - name: Check flag combination is coherent
+        shell: bash
+        env:
+          ENABLE_UNIT_TEST: ${{ inputs.enable_unit_test }}
+          ENABLE_COVERAGE: ${{ inputs.enable_coverage }}
+        run: |
+          set -euo pipefail
+          # coverage/action.yml only parses output the unit-test job
+          # produces — it never runs tests itself. Catch the incoherent
+          # combination here, fast and with a clear message, rather than
+          # letting the coverage job fail later with a more oblique error.
+          if [ "${ENABLE_COVERAGE}" = "true" ] && [ "${ENABLE_UNIT_TEST}" != "true" ]; then
+            echo "::error::enable_coverage requires enable_unit_test to also be true — coverage is parsed from the unit-test run's output."
+            exit 1
+          fi
+
+  lint:
+    name: Lint
+    if: inputs.enable_lint
+    needs: validate-inputs
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+      security-events: write # required by github/codeql-action/upload-sarif
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+      - name: Lint
+        uses: ./.github/actions/lint
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+
+  unit-test:
+    name: Unit Test
+    if: inputs.enable_unit_test
+    needs: validate-inputs
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+      - name: Unit test
+        uses: ./.github/actions/unit-test
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+
+  coverage:
+    name: Coverage
+    if: inputs.enable_coverage
+    needs: [validate-inputs, unit-test]
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+      - name: Coverage
+        uses: ./.github/actions/coverage
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+          threshold: ${{ inputs.coverage_threshold }}
+
+  dependency-scan:
+    name: Dependency Scan
+    if: inputs.enable_dependency_scan
+    needs: validate-inputs
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+      security-events: write # required by github/codeql-action/upload-sarif
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+      - name: Dependency scan
+        uses: ./.github/actions/dependency-scan
+        with:
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+
+  secret-scan:
+    name: Secret Scan
+    if: inputs.enable_secret_scan
+    needs: validate-inputs
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+      security-events: write # required by github/codeql-action/upload-sarif
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history is required for the push (full-history) scan mode,
+          # and for the pull_request mode to be able to diff base..head.
+          fetch-depth: 0
+      - name: Secret scan
+        uses: ./.github/actions/secret-scan
+        with:
+          working_dir: ${{ inputs.working_dir }}

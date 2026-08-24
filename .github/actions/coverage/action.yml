@@ -1,0 +1,151 @@
+# .github/actions/coverage/action.yml
+#
+# What: Downloads the "coverage-report" artifact produced by the unit-test
+#       action, parses it (lcov or Istanbul json-summary), and gates on
+#       the "lines" coverage percentage vs `threshold`. Pure parser/gate —
+#       it never runs tests itself, which is why this job needs: the
+#       unit-test job in central-ci.yml.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: the unit-test job to have run first and uploaded coverage output.
+#        No secrets required.
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, the
+#        coverage artifact never having been produced, the coverage file
+#        being unparseable or reporting zero total lines (a data-quality
+#        crash, never silently treated as 0% or as pass), or a real
+#        below-threshold result.
+name: Coverage (JS/TS)
+description: Parses a coverage report and gates on a percentage threshold.
+
+inputs:
+  language:
+    description: "Language to check coverage for. Only js/ts are implemented in this version."
+    required: true
+  working_dir:
+    description: "Directory the coverage report belongs to, relative to repo root."
+    required: false
+    default: '.'
+  threshold:
+    description: "Minimum required 'lines' coverage percentage."
+    required: true
+  coverage_file:
+    description: "Path (relative to working_dir) to a specific coverage report. Default: auto-detect coverage/lcov.info then coverage/coverage-summary.json."
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+        THRESHOLD: ${{ inputs.threshold }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        case "${LANGUAGE}" in
+          js|ts)
+            ;; # implemented by this action
+          python|flutter|unity)
+            die "language '${LANGUAGE}' is not yet implemented in this version"
+            ;;
+          *)
+            die "unsupported language '${LANGUAGE}'. Supported values: js ts python flutter unity"
+            ;;
+        esac
+        case "${THRESHOLD}" in
+          ''|*[!0-9.]*) die "threshold must be a number, got '${THRESHOLD}'" ;;
+        esac
+
+    - name: Download coverage artifact
+      # Only needed in auto-detect mode. An explicit coverage_file input is
+      # an escape hatch for a report produced some other way — this action
+      # then never depends on the unit-test job's artifact at all.
+      if: inputs.coverage_file == ''
+      id: download
+      continue-on-error: true
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: coverage-report
+        path: ${{ inputs.working_dir }}/coverage
+
+    - name: Fail clearly if the artifact never existed
+      if: inputs.coverage_file == '' && steps.download.outcome != 'success'
+      shell: bash
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        die "no 'coverage-report' artifact was found. This means the unit-test job never ran or never produced coverage output. Coverage requires enable_unit_test to also be true, unless you set coverage_file to point at a report produced some other way."
+
+    - name: Resolve coverage file
+      id: resolve
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        COVERAGE_FILE: ${{ inputs.coverage_file }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        if [ -n "${COVERAGE_FILE}" ]; then
+          require_file "${COVERAGE_FILE}"
+          echo "path=${COVERAGE_FILE}" >> "$GITHUB_OUTPUT"
+        elif [ -f coverage/lcov.info ]; then
+          echo "path=coverage/lcov.info" >> "$GITHUB_OUTPUT"
+        elif [ -f coverage/coverage-summary.json ]; then
+          echo "path=coverage/coverage-summary.json" >> "$GITHUB_OUTPUT"
+        else
+          die "no coverage file was produced. Expected coverage/lcov.info or coverage/coverage-summary.json under '$(pwd)' (or set coverage_file explicitly). Never treating a missing file as 0% or as a pass."
+        fi
+
+    - name: Parse coverage and compare to threshold
+      id: parse
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        COVERAGE_PATH: ${{ steps.resolve.outputs.path }}
+        THRESHOLD: ${{ inputs.threshold }}
+      run: |
+        set -uo pipefail # no -e: we capture the parser's exit code ourselves below
+        node "${GITHUB_ACTION_PATH}/../../../scripts/parse-coverage.mjs" "${COVERAGE_PATH}" "${THRESHOLD}" > parse-result.json
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Classify and summarize result
+      id: classify
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        EXIT_CODE: ${{ steps.parse.outputs.exit_code }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+
+        if [ -z "${EXIT_CODE}" ] || [ "${EXIT_CODE}" -ne 0 ]; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "could not parse the coverage report. Check the 'Parse coverage' step's log above for the parser's own error output."
+        fi
+
+        table="$(node -e '
+          const fs = require("fs");
+          const r = JSON.parse(fs.readFileSync("parse-result.json", "utf8"));
+          const fmt = (m) => (m.pct === null ? "N/A" : `${m.pct}%`) + ` (${m.covered}/${m.total})`;
+          console.log(`| Metric | Coverage |\n|---|---|\n| Lines | ${fmt(r.lines)} |\n| Branches | ${fmt(r.branches)} |\n| Functions | ${fmt(r.functions)} |\n\nThreshold (lines): ${r.threshold}% — ${r.passed ? "PASSED" : "FAILED"}`);
+        ')"
+        summary "### Coverage"
+        summary "${table}"
+
+        passed="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("parse-result.json","utf8")).passed)')"
+        if [ "${passed}" = "true" ]; then
+          echo "outcome=pass" >> "$GITHUB_OUTPUT"
+        else
+          echo "outcome=findings" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Enforce coverage result
+      if: steps.classify.outputs.outcome != 'pass'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Failing this check: coverage outcome was '${{ steps.classify.outputs.outcome }}'. See the summary above for details."
+        exit 1

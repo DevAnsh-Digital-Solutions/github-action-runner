@@ -85,6 +85,30 @@ rm -f "${summary_file}"
 run_case "summary no-ops (exit 0) when GITHUB_STEP_SUMMARY is unset" 0 \
   "unset GITHUB_STEP_SUMMARY; source '${lib_path}'; summary 'ignored'"
 
+# --- detect_package_manager() ---
+pm_dir="$(mktemp -d)"
+
+touch "${pm_dir}/package-lock.json"
+run_case "detect_package_manager finds npm" 0 \
+  "source '${lib_path}'; [ \"\$(detect_package_manager '${pm_dir}')\" = npm ]"
+rm -f "${pm_dir}/package-lock.json"
+
+touch "${pm_dir}/pnpm-lock.yaml"
+run_case "detect_package_manager finds pnpm" 0 \
+  "source '${lib_path}'; [ \"\$(detect_package_manager '${pm_dir}')\" = pnpm ]"
+rm -f "${pm_dir}/pnpm-lock.yaml"
+
+touch "${pm_dir}/yarn.lock"
+run_case "detect_package_manager finds yarn" 0 \
+  "source '${lib_path}'; [ \"\$(detect_package_manager '${pm_dir}')\" = yarn ]"
+rm -f "${pm_dir}/yarn.lock"
+
+run_case "detect_package_manager dies with no lockfile" 1 \
+  "source '${lib_path}'; detect_package_manager '${pm_dir}'"
+assert_contains "detect_package_manager names all three accepted lockfiles" "package-lock.json, pnpm-lock.yaml, or yarn.lock"
+
+rm -rf "${pm_dir}"
+
 if [ "${failures}" -eq 0 ]; then
   echo "All tests passed."
   exit 0

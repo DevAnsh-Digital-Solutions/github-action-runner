@@ -5,8 +5,8 @@
 # Keeps error handling and $GITHUB_STEP_SUMMARY output consistent across
 # every check instead of each action reimplementing it.
 #
-# Usage (from a composite action's run step):
-#   source "${GITHUB_ACTION_PATH}/../../scripts/lib.sh"
+# Usage (from a composite action's run step, e.g. .github/actions/<name>/action.yml):
+#   source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 #
 # Requires: bash. No other tools.
 
@@ -55,4 +55,23 @@ summary() {
     return 0
   fi
   echo "${line}" >> "${GITHUB_STEP_SUMMARY}"
+}
+
+# detect_package_manager DIR
+# Print "npm", "pnpm", or "yarn" depending on which lockfile is present in
+# DIR (checked in that priority order), or die naming all three accepted
+# lockfiles if none is found. Shared by any composite action that needs to
+# install or identify JS/TS dependencies, so the detection rule can't drift
+# between them.
+detect_package_manager() {
+  local dir="$1"
+  if [ -f "${dir}/package-lock.json" ]; then
+    echo "npm"
+  elif [ -f "${dir}/pnpm-lock.yaml" ]; then
+    echo "pnpm"
+  elif [ -f "${dir}/yarn.lock" ]; then
+    echo "yarn"
+  else
+    die "no lockfile found in '${dir}'. Commit one of package-lock.json, pnpm-lock.yaml, or yarn.lock so installs are reproducible."
+  fi
 }
