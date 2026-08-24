@@ -49,6 +49,7 @@ runs:
         SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
           js|ts)
@@ -71,6 +72,7 @@ runs:
       working-directory: ${{ inputs.working_dir }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         manager="$(detect_package_manager .)"
         case "${manager}" in
@@ -84,6 +86,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         require_cmd curl
         require_cmd sha256sum
@@ -134,6 +137,7 @@ runs:
         EXIT_CODE: ${{ steps.parse.outputs.exit_code }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 
         if [ -z "${EXIT_CODE}" ] || [ "${EXIT_CODE}" -ne 0 ]; then
@@ -141,6 +145,7 @@ runs:
           die "could not read osv-scanner's results as valid JSON — treating this as a scanner crash (binary/network/lockfile problem), not vulnerability findings. Check the 'Run osv-scanner' step's log above."
         fi
 
+        # shellcheck disable=SC2016 # single-quoted on purpose: this is JS for `node -e`, not a bash expansion
         table="$(node -e '
           const r = JSON.parse(require("fs").readFileSync("parse-result.json", "utf8"));
           console.log(`| Severity | Count |\n|---|---|\n| Critical | ${r.counts.CRITICAL} |\n| High | ${r.counts.HIGH} |\n| Medium | ${r.counts.MEDIUM} |\n| Low | ${r.counts.LOW} |\n| Unknown (not gated) | ${r.counts.UNKNOWN} |\n\nThreshold: ${r.threshold} — ${r.atOrAboveThreshold} finding(s) at/above threshold.`);
@@ -164,7 +169,9 @@ runs:
     - name: Enforce dependency-scan result
       if: steps.classify.outputs.outcome != 'pass'
       shell: bash
+      env:
+        OUTCOME: ${{ steps.classify.outputs.outcome }}
       run: |
         set -euo pipefail
-        echo "Failing this check: dependency-scan outcome was '${{ steps.classify.outputs.outcome }}'. See the summary above for details."
+        echo "Failing this check: dependency-scan outcome was '${OUTCOME}'. See the summary above for details."
         exit 1

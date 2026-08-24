@@ -33,6 +33,7 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${EVENT_NAME}" in
           pull_request|push) ;;
@@ -44,6 +45,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         require_cmd curl
         require_cmd tar
@@ -69,6 +71,7 @@ runs:
         EVENT_PATH: ${{ github.event_path }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         require_cmd node
         if [ "${EVENT_NAME}" = "pull_request" ]; then
@@ -109,6 +112,7 @@ runs:
         EXIT_CODE: ${{ steps.run.outputs.exit_code }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         # gitleaks exits 0 = clean, 1 = leaks found OR an internal error —
         # it does not distinguish the two by exit code alone. We use
@@ -140,7 +144,9 @@ runs:
     - name: Enforce secret-scan result
       if: steps.classify.outputs.outcome != 'pass'
       shell: bash
+      env:
+        OUTCOME: ${{ steps.classify.outputs.outcome }}
       run: |
         set -euo pipefail
-        echo "Failing this check: secret-scan outcome was '${{ steps.classify.outputs.outcome }}'. See the annotations above for details."
+        echo "Failing this check: secret-scan outcome was '${OUTCOME}'. See the annotations above for details."
         exit 1
