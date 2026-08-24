@@ -1,0 +1,154 @@
+# .github/actions/lint/action.yml
+#
+# What: Runs ESLint and emits SARIF for GitHub code scanning.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: an ESLint config already committed in `working_dir` (this action
+#        never generates one), and `eslint` itself resolvable via npx (the
+#        setup action's install step should already have provided it as a
+#        devDependency). No secrets required beyond the default GITHUB_TOKEN
+#        (used only for the SARIF upload).
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, an
+#        invalid `fail_on` value, a missing ESLint config, ESLint crashing
+#        (bad config / parser error — distinct from lint findings), or
+#        real lint findings at/above the `fail_on` severity.
+name: Lint (JS/TS)
+description: Runs ESLint and uploads SARIF results.
+
+inputs:
+  language:
+    description: "Language to lint. Only js/ts are implemented in this version."
+    required: true
+  working_dir:
+    description: "Directory to lint, relative to repo root."
+    required: false
+    default: '.'
+  fail_on:
+    description: "Minimum severity that fails the check: 'error' or 'warning'."
+    required: false
+    default: 'error'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+        FAIL_ON: ${{ inputs.fail_on }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        case "${LANGUAGE}" in
+          js|ts)
+            ;; # implemented by this action
+          python|flutter|unity)
+            die "language '${LANGUAGE}' is not yet implemented in this version"
+            ;;
+          *)
+            die "unsupported language '${LANGUAGE}'. Supported values: js ts python flutter unity"
+            ;;
+        esac
+        case "${FAIL_ON}" in
+          error|warning) ;;
+          *) die "invalid fail_on '${FAIL_ON}'. Expected 'error' or 'warning'." ;;
+        esac
+
+    - name: Check ESLint config exists
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        # Flat config (ESLint >=9) and every legacy .eslintrc* variant, plus
+        # the package.json "eslintConfig" key. We only check for presence —
+        # never write one; that's the project owner's call.
+        candidates="eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json .eslintrc.yml .eslintrc.yaml"
+        found="false"
+        for candidate in $candidates; do
+          if [ -f "${candidate}" ]; then
+            found="true"
+            break
+          fi
+        done
+        if [ "${found}" = "false" ] && [ -f package.json ] && grep -q '"eslintConfig"' package.json; then
+          found="true"
+        fi
+        if [ "${found}" = "false" ]; then
+          die "no ESLint config found in '$(pwd)'. Add one of: ${candidates}, or an \"eslintConfig\" key in package.json. This action will not generate one for you."
+        fi
+
+    - name: Ensure the SARIF formatter is available
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        require_cmd npm
+        # Prefer a formatter the project already depends on; only install an
+        # ephemeral copy (--no-save, so the consumer's lockfile is untouched)
+        # if it isn't resolvable, so the check works out of the box.
+        if ! node -e "require.resolve('@microsoft/eslint-formatter-sarif')" >/dev/null 2>&1; then
+          npm install --no-save --ignore-scripts @microsoft/eslint-formatter-sarif@3.1.0
+        fi
+
+    - name: Run ESLint
+      id: run
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        FAIL_ON: ${{ inputs.fail_on }}
+      run: |
+        set -uo pipefail # no -e: we capture ESLint's exit code ourselves below
+        extra_flags=()
+        if [ "${FAIL_ON}" = "warning" ]; then
+          extra_flags+=(--max-warnings 0)
+        fi
+        npx --no-install eslint . \
+          --format=@microsoft/eslint-formatter-sarif \
+          --output-file lint.sarif \
+          "${extra_flags[@]}"
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Classify result
+      id: classify
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        # ESLint's own exit codes: 0 = clean, 1 = lint findings reported,
+        # anything else = ESLint itself crashed (bad config, parser error).
+        if [ -z "${EXIT_CODE}" ] || { [ "${EXIT_CODE}" -ne 0 ] && [ "${EXIT_CODE}" -ne 1 ]; }; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "ESLint exited with code '${EXIT_CODE:-unknown}', meaning it crashed rather than found lint findings. Check the 'Run ESLint' step's log above for ESLint's own error output."
+        elif [ "${EXIT_CODE}" -eq 1 ]; then
+          if [ ! -s lint.sarif ]; then
+            echo "outcome=crash" >> "$GITHUB_OUTPUT"
+            die "ESLint reported a non-zero exit but produced no lint.sarif output — treating this as a crash, not lint findings."
+          fi
+          echo "outcome=findings" >> "$GITHUB_OUTPUT"
+          summary "### Lint: findings reported"
+          summary "ESLint reported failing findings under \`fail_on: ${{ inputs.fail_on }}\`. See the SARIF results in the Security tab, or the annotations on this run."
+        else
+          echo "outcome=pass" >> "$GITHUB_OUTPUT"
+          summary "### Lint: clean"
+          summary "No failing ESLint findings under \`fail_on: ${{ inputs.fail_on }}\`."
+        fi
+
+    - name: Upload SARIF
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+      with:
+        sarif_file: ${{ inputs.working_dir }}/lint.sarif
+
+    - name: Enforce lint result
+      if: steps.classify.outputs.outcome != 'pass'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Failing this check: lint outcome was '${{ steps.classify.outputs.outcome }}'. See the annotations above for details."
+        exit 1

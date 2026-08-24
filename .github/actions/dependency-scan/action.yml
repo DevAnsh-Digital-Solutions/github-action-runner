@@ -1,0 +1,170 @@
+# .github/actions/dependency-scan/action.yml
+#
+# What: Runs osv-scanner (Google's OSV database CLI, installed here as a
+#       checksum-verified pinned binary — not a third-party GitHub Action)
+#       against the project's lockfile, uploads SARIF, and gates on the
+#       count of vulnerabilities at/above `severity_threshold`.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: one of package-lock.json / pnpm-lock.yaml / yarn.lock in
+#        `working_dir`, network access to github.com (binary download) and
+#        api.osv.dev (the scan itself). No secrets required beyond the
+#        default GITHUB_TOKEN (used only for the SARIF upload).
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, an
+#        invalid `severity_threshold`, no lockfile, osv-scanner producing
+#        unparseable output (binary download/checksum failure, network
+#        failure reaching the OSV API, corrupt lockfile — a crash, distinct
+#        from real findings), or vulnerabilities at/above the threshold.
+#
+# Severity classification limitation: some OSV records only carry a full
+# CVSS vector string (e.g. "CVSS:3.1/AV:N/..."), not a plain severity label
+# or bare score. Computing a CVSS base score from a vector is non-trivial
+# and getting it wrong would silently mis-gate a security check, so
+# scripts/parse-osv-results.mjs deliberately does not attempt it — those
+# findings are reported as UNKNOWN severity and never counted toward the
+# threshold. See that script's header comment for the full classification
+# rule.
+name: Dependency Scan (JS/TS)
+description: Runs osv-scanner against the lockfile and gates on severity threshold.
+
+inputs:
+  language:
+    description: "Language to scan. Only js/ts are implemented in this version."
+    required: true
+  working_dir:
+    description: "Directory containing the lockfile, relative to repo root."
+    required: false
+    default: '.'
+  severity_threshold:
+    description: "Minimum severity that fails the check: LOW, MEDIUM, HIGH, or CRITICAL."
+    required: false
+    default: 'HIGH'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+        SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        case "${LANGUAGE}" in
+          js|ts)
+            ;; # implemented by this action
+          python|flutter|unity)
+            die "language '${LANGUAGE}' is not yet implemented in this version"
+            ;;
+          *)
+            die "unsupported language '${LANGUAGE}'. Supported values: js ts python flutter unity"
+            ;;
+        esac
+        case "$(printf '%s' "${SEVERITY_THRESHOLD}" | tr '[:lower:]' '[:upper:]')" in
+          LOW|MEDIUM|MODERATE|HIGH|CRITICAL) ;;
+          *) die "invalid severity_threshold '${SEVERITY_THRESHOLD}'. Expected one of: LOW, MEDIUM, HIGH, CRITICAL." ;;
+        esac
+
+    - name: Detect lockfile
+      id: detect
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        manager="$(detect_package_manager .)"
+        case "${manager}" in
+          npm) echo "lockfile=package-lock.json" >> "$GITHUB_OUTPUT" ;;
+          pnpm) echo "lockfile=pnpm-lock.yaml" >> "$GITHUB_OUTPUT" ;;
+          yarn) echo "lockfile=yarn.lock" >> "$GITHUB_OUTPUT" ;;
+        esac
+
+    - name: Install osv-scanner
+      id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        require_cmd curl
+        require_cmd sha256sum
+        version="2.5.1"
+        checksum="f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be"
+        bin_path="${RUNNER_TEMP}/osv-scanner"
+        curl -sSL --fail -o "${bin_path}" "https://github.com/google/osv-scanner/releases/download/v${version}/osv-scanner_linux_amd64" \
+          || die "failed to download osv-scanner v${version} from github.com — check network access / GitHub status."
+        if ! echo "${checksum}  ${bin_path}" | sha256sum -c - >/dev/null 2>&1; then
+          die "osv-scanner v${version} download failed checksum verification. Refusing to execute a binary that doesn't match the known-good SHA256."
+        fi
+        chmod 0755 "${bin_path}"
+        echo "bin_path=${bin_path}" >> "$GITHUB_OUTPUT"
+
+    - name: Run osv-scanner
+      id: run
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        BIN_PATH: ${{ steps.install.outputs.bin_path }}
+        LOCKFILE: ${{ steps.detect.outputs.lockfile }}
+      run: |
+        set -uo pipefail # no -e: classification is based on whether valid output was produced, not the raw exit code
+        "${BIN_PATH}" scan --format json -L "${LOCKFILE}" > osv-results.json
+        echo "json_exit_code=$?" >> "$GITHUB_OUTPUT"
+        "${BIN_PATH}" scan --format sarif -L "${LOCKFILE}" > dependency-scan.sarif
+        echo "sarif_exit_code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Parse results
+      id: parse
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+      run: |
+        set -uo pipefail # no -e: we capture the parser's exit code ourselves below
+        node "${GITHUB_ACTION_PATH}/../../../scripts/parse-osv-results.mjs" osv-results.json "${SEVERITY_THRESHOLD}" > parse-result.json
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Classify and summarize result
+      id: classify
+      shell: bash
+      continue-on-error: true
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        EXIT_CODE: ${{ steps.parse.outputs.exit_code }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+
+        if [ -z "${EXIT_CODE}" ] || [ "${EXIT_CODE}" -ne 0 ]; then
+          echo "outcome=crash" >> "$GITHUB_OUTPUT"
+          die "could not read osv-scanner's results as valid JSON — treating this as a scanner crash (binary/network/lockfile problem), not vulnerability findings. Check the 'Run osv-scanner' step's log above."
+        fi
+
+        table="$(node -e '
+          const r = JSON.parse(require("fs").readFileSync("parse-result.json", "utf8"));
+          console.log(`| Severity | Count |\n|---|---|\n| Critical | ${r.counts.CRITICAL} |\n| High | ${r.counts.HIGH} |\n| Medium | ${r.counts.MEDIUM} |\n| Low | ${r.counts.LOW} |\n| Unknown (not gated) | ${r.counts.UNKNOWN} |\n\nThreshold: ${r.threshold} — ${r.atOrAboveThreshold} finding(s) at/above threshold.`);
+        ')"
+        summary "### Dependency scan"
+        summary "${table}"
+
+        at_or_above="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("parse-result.json","utf8")).atOrAboveThreshold)')"
+        if [ "${at_or_above}" -eq 0 ]; then
+          echo "outcome=pass" >> "$GITHUB_OUTPUT"
+        else
+          echo "outcome=findings" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload SARIF
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+      with:
+        sarif_file: ${{ inputs.working_dir }}/dependency-scan.sarif
+
+    - name: Enforce dependency-scan result
+      if: steps.classify.outputs.outcome != 'pass'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Failing this check: dependency-scan outcome was '${{ steps.classify.outputs.outcome }}'. See the summary above for details."
+        exit 1
