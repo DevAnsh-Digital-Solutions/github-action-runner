@@ -136,6 +136,7 @@ jobs:
     runs-on: ${{ inputs.runner_label }}
     permissions:
       contents: read
+      actions: read # required by github/codeql-action/upload-sarif on private repos; see github/codeql-action#2117
       security-events: write # required by github/codeql-action/upload-sarif
     steps:
       - name: Checkout
@@ -201,6 +202,7 @@ jobs:
     runs-on: ${{ inputs.runner_label }}
     permissions:
       contents: read
+      actions: read # required by github/codeql-action/upload-sarif on private repos; see github/codeql-action#2117
       security-events: write # required by github/codeql-action/upload-sarif
     steps:
       - name: Checkout
@@ -223,6 +225,7 @@ jobs:
     runs-on: ${{ inputs.runner_label }}
     permissions:
       contents: read
+      actions: read # required by github/codeql-action/upload-sarif on private repos; see github/codeql-action#2117
       security-events: write # required by github/codeql-action/upload-sarif
     steps:
       - name: Checkout
