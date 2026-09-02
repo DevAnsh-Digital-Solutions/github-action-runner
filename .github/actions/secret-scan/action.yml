@@ -88,7 +88,12 @@ runs:
 
     - name: Run gitleaks
       id: run
-      shell: bash
+      # GitHub's default `shell: bash` invokes `bash -eo pipefail {0}` — -e
+      # is already active before our own `set` line runs and would abort
+      # this step the instant gitleaks exits non-zero (which it does on
+      # finding real secrets — the normal, expected case), before we can
+      # capture its exit code below. Override the invocation to drop -e.
+      shell: bash --noprofile --norc -o pipefail {0}
       continue-on-error: true
       working-directory: ${{ inputs.working_dir }}
       env:

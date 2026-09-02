@@ -91,7 +91,11 @@ runs:
 
     - name: Run tests
       id: run
-      shell: bash
+      # GitHub's default `shell: bash` invokes `bash -eo pipefail {0}` — -e
+      # is already active before our own `set` line runs and would abort
+      # this step the instant jest/vitest exits non-zero, before we can
+      # capture its exit code below. Override the invocation to drop -e.
+      shell: bash --noprofile --norc -o pipefail {0}
       continue-on-error: true
       working-directory: ${{ inputs.working_dir }}
       env:
