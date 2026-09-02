@@ -35,6 +35,7 @@ runs:
         LANGUAGE: ${{ inputs.language }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
           js|ts)
@@ -54,6 +55,7 @@ runs:
         WORKING_DIR: ${{ inputs.working_dir }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         manager="$(detect_package_manager "${WORKING_DIR}")"
         echo "manager=${manager}" >> "$GITHUB_OUTPUT"
@@ -81,6 +83,7 @@ runs:
         MANAGER: ${{ steps.detect.outputs.manager }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         require_cmd node "actions/setup-node above should have installed it"
         case "${MANAGER}" in

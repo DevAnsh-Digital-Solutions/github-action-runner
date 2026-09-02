@@ -11,6 +11,19 @@
 # validate-inputs (they're on the project's eventual roadmap) but every
 # check's own composite action hard-fails them with "not yet implemented
 # in this version" rather than silently skipping or passing.
+#
+# Composite action references below use the full
+# DevAnsh-Digital-Solutions/github-action-runner/... form pinned to @main,
+# NOT a local `./` path. `uses: ./path` always resolves against whatever is
+# currently checked out in the job's GITHUB_WORKSPACE — since every job
+# here checks out the CALLING (consumer) repo first, a local path would
+# resolve inside the consumer's tree instead of this repo's, and fail to
+# find the action at all. This also means these internal references are
+# currently pinned to @main regardless of what ref a consumer calls this
+# workflow at, which deviates from README.md's stated versioning policy
+# ("internal uses: references use the same ref the consumer called") —
+# threading the actual caller-supplied ref through to these lines needs
+# follow-up work; @main is the pragmatic fix for now.
 name: Central CI
 
 on:
@@ -128,12 +141,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: ./.github/actions/setup
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
       - name: Lint
-        uses: ./.github/actions/lint
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -149,12 +162,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: ./.github/actions/setup
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
       - name: Unit test
-        uses: ./.github/actions/unit-test
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -170,12 +183,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: ./.github/actions/setup
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
       - name: Coverage
-        uses: ./.github/actions/coverage
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -193,12 +206,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: ./.github/actions/setup
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
       - name: Dependency scan
-        uses: ./.github/actions/dependency-scan
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@main
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -219,6 +232,6 @@ jobs:
           # and for the pull_request mode to be able to diff base..head.
           fetch-depth: 0
       - name: Secret scan
-        uses: ./.github/actions/secret-scan
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@main
         with:
           working_dir: ${{ inputs.working_dir }}

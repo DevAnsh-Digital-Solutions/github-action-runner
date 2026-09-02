@@ -39,6 +39,7 @@ runs:
         LANGUAGE: ${{ inputs.language }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
           js|ts)
@@ -59,6 +60,7 @@ runs:
         TEST_COMMAND: ${{ inputs.test_command }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 
         if [ -n "${TEST_COMMAND}" ]; then
@@ -126,6 +128,7 @@ runs:
         RUNNER: ${{ steps.detect.outputs.runner }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 
         results_file=""
@@ -158,6 +161,7 @@ runs:
         OUTCOME: ${{ steps.classify.outputs.outcome }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 
         results_file=""
@@ -168,6 +172,7 @@ runs:
 
         summary "### Unit tests: ${OUTCOME}"
         if [ -n "${results_file}" ] && [ -f "${results_file}" ]; then
+          # shellcheck disable=SC2016 # single-quoted on purpose: this is JS for `node -e`, not a bash expansion
           table="$(node -e '
             const fs = require("fs");
             const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -194,7 +199,9 @@ runs:
     - name: Enforce test result
       if: steps.classify.outputs.outcome != 'pass'
       shell: bash
+      env:
+        OUTCOME: ${{ steps.classify.outputs.outcome }}
       run: |
         set -euo pipefail
-        echo "Failing this check: unit-test outcome was '${{ steps.classify.outputs.outcome }}'. See the annotations above for details."
+        echo "Failing this check: unit-test outcome was '${OUTCOME}'. See the annotations above for details."
         exit 1

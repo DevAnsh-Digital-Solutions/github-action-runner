@@ -37,6 +37,7 @@ runs:
         FAIL_ON: ${{ inputs.fail_on }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
           js|ts)
@@ -58,6 +59,7 @@ runs:
       working-directory: ${{ inputs.working_dir }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         # Flat config (ESLint >=9) and every legacy .eslintrc* variant, plus
         # the package.json "eslintConfig" key. We only check for presence —
@@ -82,6 +84,7 @@ runs:
       working-directory: ${{ inputs.working_dir }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         require_cmd npm
         # Prefer a formatter the project already depends on; only install an
@@ -117,8 +120,10 @@ runs:
       working-directory: ${{ inputs.working_dir }}
       env:
         EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        FAIL_ON: ${{ inputs.fail_on }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         # ESLint's own exit codes: 0 = clean, 1 = lint findings reported,
         # anything else = ESLint itself crashed (bad config, parser error).
@@ -132,11 +137,11 @@ runs:
           fi
           echo "outcome=findings" >> "$GITHUB_OUTPUT"
           summary "### Lint: findings reported"
-          summary "ESLint reported failing findings under \`fail_on: ${{ inputs.fail_on }}\`. See the SARIF results in the Security tab, or the annotations on this run."
+          summary "ESLint reported failing findings under \`fail_on: ${FAIL_ON}\`. See the SARIF results in the Security tab, or the annotations on this run."
         else
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
           summary "### Lint: clean"
-          summary "No failing ESLint findings under \`fail_on: ${{ inputs.fail_on }}\`."
+          summary "No failing ESLint findings under \`fail_on: ${FAIL_ON}\`."
         fi
 
     - name: Upload SARIF
@@ -148,7 +153,9 @@ runs:
     - name: Enforce lint result
       if: steps.classify.outputs.outcome != 'pass'
       shell: bash
+      env:
+        OUTCOME: ${{ steps.classify.outputs.outcome }}
       run: |
         set -euo pipefail
-        echo "Failing this check: lint outcome was '${{ steps.classify.outputs.outcome }}'. See the annotations above for details."
+        echo "Failing this check: lint outcome was '${OUTCOME}'. See the annotations above for details."
         exit 1

@@ -1,9 +1,21 @@
 # .github/workflows/self-check.yml
 #
 # CI for this repository itself (not for consumer repos). Lints every
-# workflow/action YAML file with actionlint and every shell script with
-# shellcheck, so the reusable workflow and composite actions stay valid
-# before consumers ever pick up a change.
+# workflow YAML file with actionlint and every shell script — both the
+# standalone scripts under scripts/tests/ and the shell embedded in every
+# composite action's `run:` steps — with shellcheck. Runs on every PR and
+# on push to main so the reusable workflow and composite actions stay
+# valid before consumers ever pick up a change.
+#
+# actionlint has no support for linting a composite action.yml file as a
+# standalone target (it expects top-level `on`/`jobs` keys, i.e. a
+# workflow) — passing one directly produces "jobs section is missing"
+# style errors, not real findings. It DOES validate `uses: ./...` local
+# action references from within a workflow (input/output shape), but does
+# NOT reach into that action's own `run:` steps for shellcheck purposes.
+# That's why actionlint below only targets .github/workflows/*.yml (its
+# actual domain), and the shellcheck job separately extracts every
+# composite action's bash steps into real .sh files first.
 name: Self Check
 
 on:
@@ -27,8 +39,10 @@ jobs:
       - name: Run actionlint
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
         with:
-          # Reusable workflow plus every composite action.yml under .github/actions/.
-          files: ".github/workflows/*.yml,.github/actions/**/action.yml"
+          # Default files scope (.github/workflows/*.yml) — see header
+          # comment for why .github/actions/**/action.yml is deliberately
+          # NOT listed here. actionlint still validates every `uses: ./...`
+          # reference these workflows make into those action.yml files.
           fail-on-error: true
 
   shellcheck:
@@ -39,12 +53,102 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Run shellcheck
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          # Scans the whole repo tree (scripts/ and tests/), skipping only
-          # docs/vendor dirs shellcheck has no business looking at.
-          ignore_paths: docs
-          # Check all shell files together so tests/ scripts that `source`
-          # scripts/lib.sh via a relative path don't trip SC1090/SC1091.
-          check_together: 'yes'
+
+      - name: Install shellcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091 # resolvable at runtime (repo root after checkout); not resolvable from a lint-time snippet
+          source ./scripts/lib.sh
+          require_cmd curl
+          require_cmd sha256sum
+          require_cmd tar
+          version="0.11.0"
+          # koalaman/shellcheck does not publish an official checksums file
+          # for its releases; this hash was computed directly from the
+          # published asset at pin time (same trust model as any other
+          # pinned-by-first-download tool: reproducible, not third-party-verified).
+          checksum="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+          archive="shellcheck-v${version}.linux.x86_64.tar.xz"
+          tmp_dir="$(mktemp -d)"
+          curl -sSL --fail -o "${tmp_dir}/${archive}" "https://github.com/koalaman/shellcheck/releases/download/v${version}/${archive}" \
+            || die "failed to download shellcheck v${version} from github.com — check network access / GitHub status."
+          echo "${checksum}  ${tmp_dir}/${archive}" | sha256sum -c - \
+            || die "shellcheck v${version} download failed checksum verification. Refusing to execute a binary that doesn't match the known-good SHA256."
+          tar -xJf "${tmp_dir}/${archive}" -C "${tmp_dir}" "shellcheck-v${version}/shellcheck"
+          install -m 0755 "${tmp_dir}/shellcheck-v${version}/shellcheck" "${RUNNER_TEMP}/shellcheck"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      - name: Install yq
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091 # resolvable at runtime (repo root after checkout); not resolvable from a lint-time snippet
+          source ./scripts/lib.sh
+          require_cmd curl
+          require_cmd sha256sum
+          version="4.53.6"
+          # Verified against mikefarah/yq's own published "checksums" release
+          # asset (SHA-256 column) at pin time.
+          checksum="c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385"
+          bin_path="${RUNNER_TEMP}/yq"
+          curl -sSL --fail -o "${bin_path}" "https://github.com/mikefarah/yq/releases/download/v${version}/yq_linux_amd64" \
+            || die "failed to download yq v${version} from github.com — check network access / GitHub status."
+          echo "${checksum}  ${bin_path}" | sha256sum -c - \
+            || die "yq v${version} download failed checksum verification. Refusing to execute a binary that doesn't match the known-good SHA256."
+          chmod 0755 "${bin_path}"
+
+      - name: Shellcheck standalone scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091 # resolvable at runtime (repo root after checkout); not resolvable from a lint-time snippet
+          source ./scripts/lib.sh
+          require_cmd shellcheck
+          shopt -s nullglob
+          scripts=(scripts/*.sh tests/*.sh)
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            die "no .sh files found under scripts/ or tests/ — expected at least scripts/lib.sh."
+          fi
+          shellcheck "${scripts[@]}"
+
+      - name: Shellcheck composite actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091 # resolvable at runtime (repo root after checkout); not resolvable from a lint-time snippet
+          source ./scripts/lib.sh
+          require_cmd shellcheck
+          require_cmd "${RUNNER_TEMP}/yq"
+
+          # Every composite action's `run:` steps are real bash, but they
+          # live embedded in YAML, which shellcheck can't read directly.
+          # Extract each `shell: bash` step's script into its own .sh file
+          # (named <action>-step<N>.sh, so a shellcheck finding's filename
+          # points straight at which action and step to fix) and shellcheck
+          # those as a batch.
+          extract_dir="$(mktemp -d)"
+          extracted_count=0
+          for action_file in .github/actions/*/action.yml; do
+            action_name="$(basename "$(dirname "${action_file}")")"
+            step_count="$("${RUNNER_TEMP}/yq" eval '.runs.steps | length' "${action_file}")"
+            i=0
+            while [ "${i}" -lt "${step_count}" ]; do
+              step_shell="$("${RUNNER_TEMP}/yq" eval ".runs.steps[${i}].shell // \"\"" "${action_file}")"
+              if [ "${step_shell}" = "bash" ]; then
+                out="${extract_dir}/${action_name}-step${i}.sh"
+                {
+                  echo "#!/usr/bin/env bash"
+                  "${RUNNER_TEMP}/yq" eval ".runs.steps[${i}].run" "${action_file}"
+                } > "${out}"
+                extracted_count=$((extracted_count + 1))
+              fi
+              i=$((i + 1))
+            done
+          done
+
+          if [ "${extracted_count}" -eq 0 ]; then
+            die "extracted zero bash steps from .github/actions/*/action.yml — expected at least one (the extraction logic itself may be broken)."
+          fi
+          echo "Extracted ${extracted_count} step script(s) from composite actions."
+          shellcheck "${extract_dir}"/*.sh
