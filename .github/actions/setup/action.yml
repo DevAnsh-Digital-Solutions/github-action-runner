@@ -3,18 +3,13 @@
 # What: Installs the JS/TS toolchain (Node.js) and project dependencies.
 #       Not a "check" itself — a prerequisite step other check actions in
 #       this job run after. Detects the package manager from whichever
-#       lockfile is present and uses its matching install command. If no
-#       lockfile is committed, falls back to `npm install` from
-#       package.json alone — reproducible installs are preferred, but
-#       reusability for repos that don't commit a lockfile matters more
-#       here than in dependency-scan (which cannot function meaningfully
-#       without one, since it needs exact resolved versions, not semver
-#       ranges — see .github/actions/dependency-scan/action.yml).
+#       lockfile is present and uses its matching install command.
 # Languages: js, ts. Any other `language` value hard-fails — see below.
-# Needs: a package.json in `working_dir`. No secrets required.
-# Exits non-zero on: an unsupported/not-yet-implemented `language`, or the
-#        install command itself failing (bad dependency, registry/network
-#        failure, etc).
+# Needs: a lockfile (package-lock.json, pnpm-lock.yaml, or yarn.lock) in
+#        `working_dir`. No secrets required.
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, a
+#        missing lockfile, or the install command itself failing (bad
+#        dependency, registry/network failure, etc).
 name: Setup (JS/TS)
 description: Installs Node.js and project dependencies for a JS/TS project.
 
@@ -62,25 +57,12 @@ runs:
         set -euo pipefail
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        require_file "${WORKING_DIR}/package.json"
-
-        # detect_package_manager dies if no lockfile exists, which is the
-        # right behavior for dependency-scan (it can't function without
-        # one) but not here — check for a lockfile ourselves first so a
-        # missing one falls back to plain `npm install` instead of failing.
-        if [ -f "${WORKING_DIR}/package-lock.json" ] || [ -f "${WORKING_DIR}/pnpm-lock.yaml" ] || [ -f "${WORKING_DIR}/yarn.lock" ]; then
-          manager="$(detect_package_manager "${WORKING_DIR}")"
-        else
-          manager="npm-install-fallback"
-        fi
+        manager="$(detect_package_manager "${WORKING_DIR}")"
         echo "manager=${manager}" >> "$GITHUB_OUTPUT"
-
         # actions/setup-node's built-in cache only understands 'npm' without
         # extra setup (pnpm/yarn caching needs the tool itself on PATH
-        # first, which we don't have yet at this point), and even 'npm'
-        # mode needs a package-lock.json to hash for the cache key. Only
-        # opt in when we know one exists; every other case (pnpm, yarn, the
-        # no-lockfile fallback) still installs below, just uncached.
+        # first, which we don't have yet at this point). Only opt into its
+        # cache for npm; pnpm/yarn installs below still work, just uncached.
         if [ "${manager}" = "npm" ]; then
           echo "cache=npm" >> "$GITHUB_OUTPUT"
         else
@@ -122,15 +104,6 @@ runs:
             # respecting the committed lockfile.
             corepack enable
             yarn install --frozen-lockfile
-            ;;
-          npm-install-fallback)
-            # No lockfile committed. Re-resolves semver ranges from
-            # package.json — not reproducible across runs the way `npm ci`
-            # is, but keeps lint/unit-test/coverage usable for repos that
-            # don't commit one. dependency-scan still requires a real
-            # lockfile regardless; this fallback doesn't extend to it.
-            require_cmd npm
-            npm install
             ;;
           *)
             die "internal error: unrecognized package manager '${MANAGER}' from the detect step"

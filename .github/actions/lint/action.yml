@@ -141,7 +141,13 @@ runs:
           fi
           echo "outcome=findings" >> "$GITHUB_OUTPUT"
           summary "### Lint: findings reported"
-          summary "ESLint reported failing findings under \`fail_on: ${FAIL_ON}\`. See the SARIF results in the Security tab, or the annotations on this run."
+          summary "ESLint reported failing findings under \`fail_on: ${FAIL_ON}\`. Full SARIF is uploaded as a build artifact below (and to the Security tab, on repos with GitHub Code Security enabled)."
+          table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" lint.sarif table)"
+          summary "${table}"
+          # Inline annotations on the PR diff — works with no Code Security
+          # license. Capped: a run with dozens of findings relies on the
+          # table above for the rest, not an unbounded wall of annotations.
+          node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" lint.sarif annotations 15
         else
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
           summary "### Lint: clean"
@@ -150,9 +156,26 @@ runs:
 
     - name: Upload SARIF
       if: steps.classify.outputs.outcome != 'crash'
+      # continue-on-error: this requires a GitHub Code Security license on a
+      # private repo ("Advanced Security must be enabled..."); we don't want
+      # a licensing gap to fail an otherwise-passing check. The findings
+      # table above and the artifact below are what's *not* license-gated.
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
       with:
         sarif_file: ${{ inputs.working_dir }}/lint.sarif
+
+    - name: Upload SARIF artifact
+      # Plain Actions build-artifact storage — a different feature from
+      # code-scanning ingestion above, free on every repo tier. Keeps the
+      # full-fidelity SARIF downloadable even when the upload step no-ops.
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: lint-sarif
+        path: ${{ inputs.working_dir }}/lint.sarif
+        if-no-files-found: warn
+        retention-days: 30
 
     - name: Enforce lint result
       if: steps.classify.outputs.outcome != 'pass'

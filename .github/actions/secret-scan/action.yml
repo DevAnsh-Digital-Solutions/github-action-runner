@@ -2,8 +2,9 @@
 #
 # What: Runs Gitleaks (installed here as a checksum-verified pinned binary —
 #       not the gitleaks-action wrapper, which requires a paid license for
-#       organization use) and uploads SARIF. Scans only the PR's diff range
-#       on pull_request events, and full history on push.
+#       organization use) with --redact, and uploads the SARIF report both
+#       to GitHub code scanning and as a retained build artifact. Scans only
+#       the PR's diff range on pull_request events, and full history on push.
 # Languages: none — this check is language-agnostic and takes no `language`
 #       input.
 # Needs: the calling job's checkout step to have fetched enough history —
@@ -104,8 +105,14 @@ runs:
         # LOG_OPTS is deliberately unquoted-if-empty: gitleaks rejects an
         # empty --log-opts="" value, so we must omit the flag entirely for
         # the push (full-history) case rather than pass an empty one.
+        # --redact: without it, gitleaks writes the actual matched secret
+        # value into the SARIF report. That report is now uploaded both to
+        # GitHub code scanning and as a retained build artifact (see below),
+        # so an unredacted value would persist real credentials somewhere
+        # downloadable for 30 days instead of just flashing through this
+        # ephemeral runner. Findings are unaffected — only the value is masked.
         # shellcheck disable=SC2086
-        "${BIN_PATH}" git --report-format sarif --report-path secret-scan.sarif ${LOG_OPTS} .
+        "${BIN_PATH}" git --report-format sarif --report-path secret-scan.sarif --redact ${LOG_OPTS} .
         echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Classify result
@@ -133,7 +140,16 @@ runs:
         elif [ "${EXIT_CODE}" -eq 1 ]; then
           echo "outcome=findings" >> "$GITHUB_OUTPUT"
           summary "### Secret scan: findings reported"
-          summary "Gitleaks found potential secrets. See the SARIF results in the Security tab, or the annotations on this run. Rotate any real credentials immediately, even after removing them from history."
+          summary "Gitleaks found potential secrets. Rotate any real credentials immediately, even after removing them from history. Full SARIF is uploaded as a build artifact below (and to the Security tab, on repos with GitHub Code Security enabled)."
+          table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" secret-scan.sarif table)"
+          summary "${table}"
+          # Inline annotations, file/line/rule only (--no-message): unlike
+          # lint/dependency-scan, we deliberately never put a finding's
+          # message text into these — annotations render inline in the PR
+          # "Files changed" view, a far more visible surface than a
+          # downloaded artifact, and that's the wrong place to broadcast any
+          # detail about a matched secret even with --redact applied above.
+          node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" secret-scan.sarif annotations 15 --no-message
         else
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
           summary "### Secret scan: clean"
@@ -142,9 +158,27 @@ runs:
 
     - name: Upload SARIF
       if: steps.classify.outputs.outcome != 'crash'
+      # continue-on-error: this requires a GitHub Code Security license on a
+      # private repo ("Advanced Security must be enabled..."); we don't want
+      # a licensing gap to fail an otherwise-passing check. The findings
+      # table above and the artifact below are what's *not* license-gated.
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
       with:
         sarif_file: ${{ inputs.working_dir }}/secret-scan.sarif
+
+    - name: Upload SARIF artifact
+      # Plain Actions build-artifact storage — a different feature from
+      # code-scanning ingestion above, free on every repo tier. Keeps the
+      # full-fidelity (--redact'd) SARIF downloadable even when the upload
+      # step no-ops.
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: secret-scan-sarif
+        path: ${{ inputs.working_dir }}/secret-scan.sarif
+        if-no-files-found: warn
+        retention-days: 30
 
     - name: Enforce secret-scan result
       if: steps.classify.outputs.outcome != 'pass'
