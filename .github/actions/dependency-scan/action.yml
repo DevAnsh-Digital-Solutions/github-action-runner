@@ -166,9 +166,13 @@ runs:
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
         else
           echo "outcome=findings" >> "$GITHUB_OUTPUT"
+          # Per-vulnerability detail (package, rule/CVE, severity, message) —
+          # the counts table above only says how many, not which ones.
+          detail_table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" dependency-scan.sarif table)"
+          summary "${detail_table}"
           # Inline annotations on the PR diff — works with no Code Security
           # license. Capped: a run with dozens of findings relies on the
-          # counts table above for the rest, not an unbounded wall of them.
+          # table above for the rest, not an unbounded wall of them.
           node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" dependency-scan.sarif annotations 15
         fi
 

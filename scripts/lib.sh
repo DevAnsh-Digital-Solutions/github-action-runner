@@ -45,11 +45,15 @@ require_file() {
 }
 
 # summary LINE
-# Append LINE to the job's step summary. No-ops with a stderr warning (does
-# not fail the step) if $GITHUB_STEP_SUMMARY isn't set, e.g. when a script
-# is run locally outside of a GitHub Actions job.
+# Print LINE to the step's own log (so it's visible scrolling the run like
+# any other CI output, no click into the Summary tab required), and also
+# append it to the job's step summary. The step-summary append no-ops with
+# a stderr warning (does not fail the step) if $GITHUB_STEP_SUMMARY isn't
+# set, e.g. when a script is run locally outside of a GitHub Actions job —
+# the console echo still happens in that case.
 summary() {
   local line="$1"
+  echo "${line}"
   if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "warning: GITHUB_STEP_SUMMARY not set, skipping summary line" >&2
     return 0

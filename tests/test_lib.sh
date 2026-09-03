@@ -80,10 +80,12 @@ else
   echo "FAIL: summary did not write the line to GITHUB_STEP_SUMMARY"
   failures=$((failures + 1))
 fi
+assert_contains "summary also echoes the line to the step's own log" "hello from test"
 rm -f "${summary_file}"
 
 run_case "summary no-ops (exit 0) when GITHUB_STEP_SUMMARY is unset" 0 \
-  "unset GITHUB_STEP_SUMMARY; source '${lib_path}'; summary 'ignored'"
+  "unset GITHUB_STEP_SUMMARY; source '${lib_path}'; summary 'still visible in the log'"
+assert_contains "summary still echoes to the log when GITHUB_STEP_SUMMARY is unset" "still visible in the log"
 
 # --- detect_package_manager() ---
 pm_dir="$(mktemp -d)"
