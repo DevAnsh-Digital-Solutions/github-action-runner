@@ -6,24 +6,31 @@
 # and branch policy stay entirely in the consumer's own ci.yml — this
 # workflow only knows about `language` and the enable_* flags.
 #
-# Phase 1 implements checks for js/ts only (lint, unit-test, coverage,
-# dependency-scan, secret-scan). python/flutter/unity are accepted by
+# Phases 1-2 implement checks for js/ts and python (lint, unit-test,
+# coverage, dependency-scan, secret-scan). flutter/unity are accepted by
 # validate-inputs (they're on the project's eventual roadmap) but every
 # check's own composite action hard-fails them with "not yet implemented
 # in this version" rather than silently skipping or passing.
 #
 # Composite action references below use the full
-# DevAnsh-Digital-Solutions/github-action-runner/... form pinned to @main,
+# DevAnsh-Digital-Solutions/github-action-runner/... form pinned to a ref,
 # NOT a local `./` path. `uses: ./path` always resolves against whatever is
 # currently checked out in the job's GITHUB_WORKSPACE — since every job
 # here checks out the CALLING (consumer) repo first, a local path would
 # resolve inside the consumer's tree instead of this repo's, and fail to
 # find the action at all. This also means these internal references are
-# currently pinned to @main regardless of what ref a consumer calls this
+# pinned to one fixed ref regardless of what ref a consumer calls this
 # workflow at, which deviates from README.md's stated versioning policy
 # ("internal uses: references use the same ref the consumer called") —
 # threading the actual caller-supplied ref through to these lines needs
-# follow-up work; @main is the pragmatic fix for now.
+# follow-up work.
+#
+# !! PRE-RELEASE REF — REVERT BEFORE MERGING TO main !!
+# On the Feature/Phase-2 branch the references below point at
+# @Feature/Phase-2 so that a consumer testing this branch runs THIS
+# branch's actions (pointing them at @main would silently test the old
+# code). Before merging, change every `@Feature/Phase-2` in this file back
+# to `@main` (and, at release time, to the release tag).
 name: Central CI
 
 on:
@@ -73,6 +80,11 @@ on:
         type: number
         required: false
         default: 80
+      python_version:
+        description: "Python version to install when language is python, passed to actions/setup-python."
+        type: string
+        required: false
+        default: '3.12'
 
 # Default to least privilege; individual jobs narrow further where they can
 # and widen only where a specific step (e.g. SARIF upload) needs it.
@@ -142,12 +154,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
+          python_version: ${{ inputs.python_version }}
       - name: Lint
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -163,12 +176,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
+          python_version: ${{ inputs.python_version }}
       - name: Unit test
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -184,12 +198,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
+          python_version: ${{ inputs.python_version }}
       - name: Coverage
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -208,12 +223,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
+          python_version: ${{ inputs.python_version }}
       - name: Dependency scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@Feature/Phase-2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -235,6 +251,6 @@ jobs:
           # and for the pull_request mode to be able to diff base..head.
           fetch-depth: 0
       - name: Secret scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@main
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@Feature/Phase-2
         with:
           working_dir: ${{ inputs.working_dir }}

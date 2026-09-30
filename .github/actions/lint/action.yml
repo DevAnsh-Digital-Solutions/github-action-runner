@@ -1,29 +1,39 @@
 # .github/actions/lint/action.yml
 #
-# What: Runs ESLint and emits SARIF for GitHub code scanning.
-# Languages: js, ts. Any other `language` value hard-fails — see below.
-# Needs: an ESLint config already committed in `working_dir` (this action
-#        never generates one), and `eslint` itself resolvable via npx (the
-#        setup action's install step should already have provided it as a
-#        devDependency). No secrets required beyond the default GITHUB_TOKEN
-#        (used only for the SARIF upload).
+# What: Runs the language's linter — ESLint for js/ts, `ruff check` for
+#       python — and emits SARIF for GitHub code scanning, plus a findings
+#       table in the job summary and capped inline PR annotations.
+# Languages: js, ts, python. flutter/unity hard-fail as not yet implemented;
+#        any other `language` value hard-fails with the supported list.
+# Needs: js/ts: an ESLint config already committed in `working_dir` (this
+#        action never generates one), and `eslint` itself resolvable via npx
+#        (the setup action's install step should already have provided it as
+#        a devDependency).
+#        python: `ruff` on PATH (declare it in requirements.txt or the
+#        pyproject.toml extras the setup action installs) and `node` (only
+#        to run the SARIF summarizer; preinstalled on GitHub-hosted runners).
+#        Ruff reads its rules from the project's own pyproject.toml/ruff.toml.
+#        No secrets required beyond the default GITHUB_TOKEN (used only for
+#        the SARIF upload).
 # Exits non-zero on: an unsupported/not-yet-implemented `language`, an
-#        invalid `fail_on` value, a missing ESLint config, ESLint crashing
-#        (bad config / parser error — distinct from lint findings), or
-#        real lint findings at/above the `fail_on` severity.
-name: Lint (JS/TS)
-description: Runs ESLint and uploads SARIF results.
+#        invalid `fail_on` value, a missing ESLint config / missing ruff, the
+#        linter crashing (bad config / parser error — distinct from lint
+#        findings), or real lint findings at/above the `fail_on` severity.
+#        (`fail_on` only affects ESLint; ruff has a single severity, so any
+#        ruff finding fails the check.)
+name: Lint (JS/TS/Python)
+description: Runs ESLint or ruff and uploads SARIF results.
 
 inputs:
   language:
-    description: "Language to lint. Only js/ts are implemented in this version."
+    description: "Language to lint. js, ts and python are implemented in this version."
     required: true
   working_dir:
     description: "Directory to lint, relative to repo root."
     required: false
     default: '.'
   fail_on:
-    description: "Minimum severity that fails the check: 'error' or 'warning'."
+    description: "Minimum severity that fails the check: 'error' or 'warning'. Affects ESLint only; any ruff finding fails."
     required: false
     default: 'error'
 
@@ -40,9 +50,9 @@ runs:
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
-          js|ts)
+          js|ts|python)
             ;; # implemented by this action
-          python|flutter|unity)
+          flutter|unity)
             die "language '${LANGUAGE}' is not yet implemented in this version"
             ;;
           *)
@@ -55,6 +65,7 @@ runs:
         esac
 
     - name: Check ESLint config exists
+      if: inputs.language == 'js' || inputs.language == 'ts'
       shell: bash
       working-directory: ${{ inputs.working_dir }}
       run: |
@@ -80,6 +91,7 @@ runs:
         fi
 
     - name: Ensure the SARIF formatter is available
+      if: inputs.language == 'js' || inputs.language == 'ts'
       shell: bash
       working-directory: ${{ inputs.working_dir }}
       run: |
@@ -94,28 +106,60 @@ runs:
           npm install --no-save --ignore-scripts @microsoft/eslint-formatter-sarif@3.1.0
         fi
 
-    - name: Run ESLint
+    - name: Check ruff is available
+      if: inputs.language == 'python'
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        require_cmd node "the SARIF summarizer needs it; it is preinstalled on GitHub-hosted runners"
+        require_cmd ruff "add ruff to requirements.txt (or to the pyproject.toml extras named by the setup action's pip_extras) so the setup action installs it"
+        ruff --version
+
+    - name: Run linter
       id: run
       # GitHub's default `shell: bash` invokes `bash -eo pipefail {0}` — -e
       # is already active before our own `set` line runs and would abort
-      # this step the instant ESLint exits non-zero, before we can capture
-      # its exit code below. Override the invocation itself to drop -e.
+      # this step the instant the linter exits non-zero, before we can
+      # capture its exit code below. Override the invocation itself to drop -e.
       shell: bash --noprofile --norc -o pipefail {0}
       continue-on-error: true
       working-directory: ${{ inputs.working_dir }}
       env:
+        LANGUAGE: ${{ inputs.language }}
         FAIL_ON: ${{ inputs.fail_on }}
       run: |
-        set -uo pipefail # no -e: we capture ESLint's exit code ourselves below
-        extra_flags=()
-        if [ "${FAIL_ON}" = "warning" ]; then
-          extra_flags+=(--max-warnings 0)
-        fi
-        npx --no-install eslint . \
-          --format=@microsoft/eslint-formatter-sarif \
-          --output-file lint.sarif \
-          "${extra_flags[@]}"
-        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+        set -uo pipefail # no -e: we capture the linter's exit code ourselves below
+        code=0
+        case "${LANGUAGE}" in
+          js|ts)
+            # ESLint with the SARIF formatter
+            extra_flags=()
+            if [ "${FAIL_ON}" = "warning" ]; then
+              extra_flags+=(--max-warnings 0)
+            fi
+            npx --no-install eslint . \
+              --format=@microsoft/eslint-formatter-sarif \
+              --output-file lint.sarif \
+              "${extra_flags[@]}"
+            code=$?
+            ;;
+          python)
+            # ruff check, SARIF to a file. --no-cache keeps .ruff_cache out of
+            # the consumer's tree.
+            ruff check . --no-cache --output-format sarif --output-file lint.sarif
+            code=$?
+            if [ "${code}" -eq 1 ]; then
+              # Second pass over the same findings, readable in this step's
+              # log (a SARIF file isn't). Its exit code is irrelevant — the
+              # first run's is the verdict.
+              ruff check . --no-cache --output-format concise || true
+            fi
+            ;;
+        esac
+        echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
 
     - name: Classify result
       id: classify
@@ -125,23 +169,37 @@ runs:
       env:
         EXIT_CODE: ${{ steps.run.outputs.exit_code }}
         FAIL_ON: ${{ inputs.fail_on }}
+        LANGUAGE: ${{ inputs.language }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        # ESLint's own exit codes: 0 = clean, 1 = lint findings reported,
-        # anything else = ESLint itself crashed (bad config, parser error).
+        # ESLint and ruff share these exit codes: 0 = clean, 1 = lint findings
+        # reported, anything else = the linter itself crashed (bad config,
+        # parser error).
         if [ -z "${EXIT_CODE}" ] || { [ "${EXIT_CODE}" -ne 0 ] && [ "${EXIT_CODE}" -ne 1 ]; }; then
           echo "outcome=crash" >> "$GITHUB_OUTPUT"
-          die "ESLint exited with code '${EXIT_CODE:-unknown}', meaning it crashed rather than found lint findings. Check the 'Run ESLint' step's log above for ESLint's own error output."
+          die "the linter exited with code '${EXIT_CODE:-unknown}', meaning it crashed rather than found lint findings. Check the 'Run linter' step's log above for its own error output."
         elif [ "${EXIT_CODE}" -eq 1 ]; then
           if [ ! -s lint.sarif ]; then
             echo "outcome=crash" >> "$GITHUB_OUTPUT"
-            die "ESLint reported a non-zero exit but produced no lint.sarif output — treating this as a crash, not lint findings."
+            die "the linter reported a non-zero exit but produced no lint.sarif output — treating this as a crash, not lint findings."
+          fi
+          if [ "${LANGUAGE}" = "python" ]; then
+            # ruff also exits 1 for some hard errors (e.g. an invalid path or
+            # config); a SARIF file with zero results is what tells those
+            # apart from real findings.
+            if [ "$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" lint.sarif count)" -eq 0 ]; then
+              echo "outcome=crash" >> "$GITHUB_OUTPUT"
+              die "ruff exited 1 but reported zero findings — treating this as a crash (bad config or path), not lint findings. Check the 'Run linter' step's log above."
+            fi
+            # ruff writes absolute file:// URIs; annotations and code
+            # scanning both need repo-relative paths, so rewrite in place.
+            node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" lint.sarif relativize
           fi
           echo "outcome=findings" >> "$GITHUB_OUTPUT"
           summary "### Lint: findings reported"
-          summary "ESLint reported failing findings under \`fail_on: ${FAIL_ON}\`. Full SARIF is uploaded as a build artifact below (and to the Security tab, on repos with GitHub Code Security enabled)."
+          summary "The linter reported failing findings under \`fail_on: ${FAIL_ON}\`. Full SARIF is uploaded as a build artifact below (and to the Security tab, on repos with GitHub Code Security enabled)."
           table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" lint.sarif table)"
           summary "${table}"
           # Inline annotations on the PR diff — works with no Code Security
@@ -151,7 +209,7 @@ runs:
         else
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
           summary "### Lint: clean"
-          summary "No failing ESLint findings under \`fail_on: ${FAIL_ON}\`."
+          summary "No failing lint findings under \`fail_on: ${FAIL_ON}\`."
         fi
 
     - name: Upload SARIF

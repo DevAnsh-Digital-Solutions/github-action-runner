@@ -6,6 +6,8 @@
 
 import assert from 'node:assert/strict';
 import {
+  toRepoRelativePath,
+  relativizeSarif,
   extractResults,
   escapeData,
   escapeProperty,
@@ -159,6 +161,52 @@ test('formatAnnotations replaces the message with a generic pointer when include
   const lines = formatAnnotations(results, { includeMessage: false });
   assert.doesNotMatch(lines[0], /secret value XYZ/);
   assert.match(lines[0], /see the uploaded SARIF artifact/);
+});
+
+// --- repo-relative paths (ruff emits absolute file:// URIs) ------------------
+test('toRepoRelativePath strips a POSIX workspace prefix', () => {
+  assert.equal(
+    toRepoRelativePath('file:///home/runner/work/r/r/src/app.py', '/home/runner/work/r/r'),
+    'src/app.py',
+  );
+  assert.equal(
+    toRepoRelativePath('file:///home/runner/work/r/r/src/app.py', '/home/runner/work/r/r/'),
+    'src/app.py',
+  );
+});
+
+test('toRepoRelativePath handles Windows drive paths and percent-encoding', () => {
+  assert.equal(toRepoRelativePath('file:///E:/Job/py/src/a%20b.py', String.raw`e:\Job\py`), 'src/a b.py');
+});
+
+test('toRepoRelativePath leaves relative URIs, outside-workspace paths and no-workspace calls alone', () => {
+  assert.equal(toRepoRelativePath('src/app.py', '/w'), 'src/app.py');
+  assert.equal(toRepoRelativePath('file:///other/app.py', '/w'), 'file:///other/app.py');
+  assert.equal(toRepoRelativePath('file:///w/app.py', undefined), 'file:///w/app.py');
+  assert.equal(toRepoRelativePath('file:///wx/app.py', '/w'), 'file:///wx/app.py'); // prefix must end at a path boundary
+});
+
+test('toRepoRelativePath leaves a malformed percent-encoded URI unchanged', () => {
+  assert.equal(toRepoRelativePath('file:///w/%E0%A4%A.py', '/w'), 'file:///w/%E0%A4%A.py');
+});
+
+test('extractResults makes absolute file:// paths repo-relative when given a workspace', () => {
+  const sarif = { runs: [{ results: [{ ruleId: 'F401', level: 'error', message: { text: 'unused' },
+    locations: [{ physicalLocation: { artifactLocation: { uri: 'file:///w/src/a.py' }, region: { startLine: 3 } } }] }] }] };
+  assert.equal(extractResults(sarif, { workspace: '/w' })[0].file, 'src/a.py');
+  assert.match(formatAnnotations(extractResults(sarif, { workspace: '/w' }))[0], /^::error file=src\/a\.py,title=F401,line=3::unused$/);
+});
+
+test('relativizeSarif rewrites artifact URIs in results and fixes, and nothing else', () => {
+  const sarif = { runs: [{ results: [{
+    message: { text: 'file:///w/not-a-uri-field.py' },
+    locations: [{ physicalLocation: { artifactLocation: { uri: 'file:///w/src/a.py' } } }],
+    fixes: [{ artifactChanges: [{ artifactLocation: { uri: 'file:///w/src/a.py' } }] }],
+  }] }] };
+  const out = relativizeSarif(sarif, '/w');
+  assert.equal(out.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, 'src/a.py');
+  assert.equal(out.runs[0].results[0].fixes[0].artifactChanges[0].artifactLocation.uri, 'src/a.py');
+  assert.equal(out.runs[0].results[0].message.text, 'file:///w/not-a-uri-field.py');
 });
 
 if (failures === 0) {

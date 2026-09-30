@@ -2,36 +2,53 @@
 #
 # What: Runs osv-scanner (Google's OSV database CLI, installed here as a
 #       checksum-verified pinned binary — not a third-party GitHub Action)
-#       against the project's lockfile, uploads SARIF, and gates on the
-#       count of vulnerabilities at/above `severity_threshold`.
-# Languages: js, ts. Any other `language` value hard-fails — see below.
-# Needs: one of package-lock.json / pnpm-lock.yaml / yarn.lock in
-#        `working_dir`, network access to github.com (binary download) and
-#        api.osv.dev (the scan itself). No secrets required beyond the
-#        default GITHUB_TOKEN (used only for the SARIF upload).
+#       against the project's dependency file(s), uploads SARIF, and gates on
+#       the count of vulnerabilities at/above `severity_threshold`. Findings
+#       are shown as a table — Severity | Package | Installed | Vulnerability
+#       | Fixed in, highest severity first — in the job summary and again in
+#       the log of the final "Enforce" step, right under the failure message
+#       that says what to run to fix them.
+# Languages: js, ts, python. flutter/unity hard-fail as not yet implemented;
+#        any other `language` value hard-fails with the supported list.
+# Needs: js/ts: one of package-lock.json / pnpm-lock.yaml / yarn.lock in
+#        `working_dir`.
+#        python: at least one of requirements.txt / poetry.lock / Pipfile.lock
+#        in `working_dir` (every one present is scanned). osv-scanner reads a
+#        requirements.txt literally and does not resolve version ranges, so
+#        pin exact versions (==), transitive dependencies included (e.g. from
+#        `pip freeze`), or prefer a lockfile.
+#        Both: network access to github.com (binary download) and api.osv.dev
+#        (the scan itself), and `node` (to render the findings; preinstalled
+#        on GitHub-hosted runners). No secrets required beyond the default
+#        GITHUB_TOKEN (used only for the SARIF upload).
 # Exits non-zero on: an unsupported/not-yet-implemented `language`, an
-#        invalid `severity_threshold`, no lockfile, osv-scanner producing
-#        unparseable output (binary download/checksum failure, network
-#        failure reaching the OSV API, corrupt lockfile — a crash, distinct
-#        from real findings), or vulnerabilities at/above the threshold.
+#        invalid `severity_threshold`, no dependency file, osv-scanner
+#        producing unparseable output (binary download/checksum failure,
+#        network failure reaching the OSV API, corrupt lockfile — a crash,
+#        distinct from real findings), or vulnerabilities at/above the
+#        threshold.
+#
+# One finding = one real vulnerability, not one OSV record: the same flaw is
+# often published as a GHSA-, PYSEC- and CVE- record, and scripts/
+# parse-osv-results.mjs merges records that alias each other.
 #
 # Severity classification limitation: some OSV records only carry a full
 # CVSS vector string (e.g. "CVSS:3.1/AV:N/..."), not a plain severity label
 # or bare score. Computing a CVSS base score from a vector is non-trivial
 # and getting it wrong would silently mis-gate a security check, so
-# scripts/parse-osv-results.mjs deliberately does not attempt it — those
-# findings are reported as UNKNOWN severity and never counted toward the
-# threshold. See that script's header comment for the full classification
-# rule.
-name: Dependency Scan (JS/TS)
-description: Runs osv-scanner against the lockfile and gates on severity threshold.
+# scripts/parse-osv-results.mjs deliberately does not attempt it — it uses
+# the label/score the advisory (or osv-scanner itself) provides, and
+# findings with none are reported as UNKNOWN severity and never counted
+# toward the threshold. See that script's header comment for the full rule.
+name: Dependency Scan (JS/TS/Python)
+description: Runs osv-scanner against the dependency file(s) and gates on severity threshold.
 
 inputs:
   language:
-    description: "Language to scan. Only js/ts are implemented in this version."
+    description: "Language to scan. js, ts and python are implemented in this version."
     required: true
   working_dir:
-    description: "Directory containing the lockfile, relative to repo root."
+    description: "Directory containing the lockfile / requirements.txt, relative to repo root."
     required: false
     default: '.'
   severity_threshold:
@@ -52,9 +69,9 @@ runs:
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
-          js|ts)
+          js|ts|python)
             ;; # implemented by this action
-          python|flutter|unity)
+          flutter|unity)
             die "language '${LANGUAGE}' is not yet implemented in this version"
             ;;
           *)
@@ -66,19 +83,30 @@ runs:
           *) die "invalid severity_threshold '${SEVERITY_THRESHOLD}'. Expected one of: LOW, MEDIUM, HIGH, CRITICAL." ;;
         esac
 
-    - name: Detect lockfile
+    - name: Detect dependency files
       id: detect
       shell: bash
       working-directory: ${{ inputs.working_dir }}
+      env:
+        LANGUAGE: ${{ inputs.language }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        manager="$(detect_package_manager .)"
-        case "${manager}" in
-          npm) echo "lockfile=package-lock.json" >> "$GITHUB_OUTPUT" ;;
-          pnpm) echo "lockfile=pnpm-lock.yaml" >> "$GITHUB_OUTPUT" ;;
-          yarn) echo "lockfile=yarn.lock" >> "$GITHUB_OUTPUT" ;;
+        case "${LANGUAGE}" in
+          js|ts)
+            # the lockfile of whichever package manager the project uses
+            manager="$(detect_package_manager .)"
+            case "${manager}" in
+              npm) echo "lockfiles=package-lock.json" >> "$GITHUB_OUTPUT" ;;
+              pnpm) echo "lockfiles=pnpm-lock.yaml" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "lockfiles=yarn.lock" >> "$GITHUB_OUTPUT" ;;
+            esac
+            ;;
+          python)
+            # every one of requirements.txt / poetry.lock / Pipfile.lock present
+            echo "lockfiles=$(detect_python_scan_files .)" >> "$GITHUB_OUTPUT"
+            ;;
         esac
 
     - name: Install osv-scanner
@@ -112,12 +140,20 @@ runs:
       working-directory: ${{ inputs.working_dir }}
       env:
         BIN_PATH: ${{ steps.install.outputs.bin_path }}
-        LOCKFILE: ${{ steps.detect.outputs.lockfile }}
+        LOCKFILES: ${{ steps.detect.outputs.lockfiles }}
       run: |
         set -uo pipefail # no -e: classification is based on whether valid output was produced, not the raw exit code
-        "${BIN_PATH}" scan --format json -L "${LOCKFILE}" > osv-results.json
+        # One -L per detected file. The names come from a fixed allow-list in
+        # scripts/lib.sh / the detect step (no spaces), so splitting on
+        # whitespace here is safe.
+        read -r -a lockfile_list <<< "${LOCKFILES}"
+        lockfile_args=()
+        for lockfile in "${lockfile_list[@]}"; do
+          lockfile_args+=(-L "${lockfile}")
+        done
+        "${BIN_PATH}" scan --format json "${lockfile_args[@]}" > osv-results.json
         echo "json_exit_code=$?" >> "$GITHUB_OUTPUT"
-        "${BIN_PATH}" scan --format sarif -L "${LOCKFILE}" > dependency-scan.sarif
+        "${BIN_PATH}" scan --format sarif "${lockfile_args[@]}" > dependency-scan.sarif
         echo "sarif_exit_code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Parse results
@@ -143,6 +179,7 @@ runs:
       working-directory: ${{ inputs.working_dir }}
       env:
         EXIT_CODE: ${{ steps.parse.outputs.exit_code }}
+        SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
@@ -161,15 +198,22 @@ runs:
         summary "### Dependency scan"
         summary "${table}"
 
+        total="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("parse-result.json","utf8")).total)')"
+        if [ "${total}" -gt 0 ]; then
+          # Per-vulnerability detail, highest severity first: which package,
+          # which version is installed, which advisory, and what fixes it —
+          # the counts table above only says how many. Shown even on a pass,
+          # since below-threshold findings are still worth seeing.
+          summary "#### Vulnerable dependencies"
+          detail_table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/parse-osv-results.mjs" osv-results.json "${SEVERITY_THRESHOLD}" markdown)"
+          summary "${detail_table}"
+        fi
+
         at_or_above="$(node -e 'console.log(JSON.parse(require("fs").readFileSync("parse-result.json","utf8")).atOrAboveThreshold)')"
         if [ "${at_or_above}" -eq 0 ]; then
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
         else
           echo "outcome=findings" >> "$GITHUB_OUTPUT"
-          # Per-vulnerability detail (package, rule/CVE, severity, message) —
-          # the counts table above only says how many, not which ones.
-          detail_table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-sarif.mjs" dependency-scan.sarif table)"
-          summary "${detail_table}"
           # Inline annotations on the PR diff — works with no Code Security
           # license. Capped: a run with dozens of findings relies on the
           # table above for the rest, not an unbounded wall of them.
@@ -202,9 +246,39 @@ runs:
     - name: Enforce dependency-scan result
       if: steps.classify.outputs.outcome != 'pass'
       shell: bash
+      working-directory: ${{ inputs.working_dir }}
       env:
         OUTCOME: ${{ steps.classify.outputs.outcome }}
+        LANGUAGE: ${{ inputs.language }}
+        SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
       run: |
         set -euo pipefail
-        echo "Failing this check: dependency-scan outcome was '${OUTCOME}'. See the summary above for details."
+        if [ "${OUTCOME}" != "findings" ]; then
+          # crash (or classify never reported): there is no trustworthy
+          # findings table to print, so point at the scanner's own logs.
+          echo "::error::dependency-scan did not complete (outcome: '${OUTCOME:-unknown}'). This is a scanner/infrastructure problem, not a vulnerability finding — see the 'Run osv-scanner' and 'Classify and summarize result' steps above."
+          exit 1
+        fi
+
+        case "${LANGUAGE}" in
+          js|ts)
+            # npm/pnpm/yarn remediation
+            fix="Run 'npm audit fix' (or 'npm install <package>@<Fixed in version>' for each package below; pnpm/yarn: 'pnpm update <package>@<version>' / 'yarn upgrade <package>@<version>'), then commit the updated lockfile."
+            ;;
+          python)
+            # pip/poetry/pipenv remediation
+            fix="For each package below run 'pip install --upgrade <package>==<Fixed in version>' and update its pin in requirements.txt (poetry: 'poetry update <package>', pipenv: 'pipenv update <package>'), then commit the updated file."
+            ;;
+          *)
+            fix="Upgrade each package below to its 'Fixed in' version and commit the updated dependency file."
+            ;;
+        esac
+        echo "::error::dependency-scan found vulnerabilities at or above ${SEVERITY_THRESHOLD}. To fix: ${fix}"
+        echo
+        echo "Vulnerable dependencies (highest severity first):"
+        # Same findings as the job summary's table, in plain text, so they
+        # sit right under the failure message in this step's log. Never let
+        # a rendering problem hide the failure itself.
+        node "${GITHUB_ACTION_PATH}/../../../scripts/parse-osv-results.mjs" osv-results.json "${SEVERITY_THRESHOLD}" text \
+          || echo "(could not render the findings table — see the uploaded SARIF artifact)"
         exit 1

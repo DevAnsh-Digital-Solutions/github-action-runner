@@ -1,11 +1,13 @@
 # .github/actions/coverage/action.yml
 #
 # What: Downloads the "coverage-report" artifact produced by the unit-test
-#       action, parses it (lcov or Istanbul json-summary), and gates on
-#       the "lines" coverage percentage vs `threshold`. Pure parser/gate —
-#       it never runs tests itself, which is why this job needs: the
-#       unit-test job in central-ci.yml.
-# Languages: js, ts. Any other `language` value hard-fails — see below.
+#       action, parses it (lcov or Istanbul json-summary for js/ts; Cobertura
+#       coverage.xml from pytest-cov for python), and gates on the "lines"
+#       coverage percentage vs `threshold`. Pure parser/gate — it never runs
+#       tests itself, which is why this job needs: the unit-test job in
+#       central-ci.yml.
+# Languages: js, ts, python. flutter/unity hard-fail as not yet implemented;
+#        any other `language` value hard-fails with the supported list.
 # Needs: the unit-test job to have run first and uploaded coverage output.
 #        No secrets required.
 # Exits non-zero on: an unsupported/not-yet-implemented `language`, the
@@ -13,12 +15,12 @@
 #        being unparseable or reporting zero total lines (a data-quality
 #        crash, never silently treated as 0% or as pass), or a real
 #        below-threshold result.
-name: Coverage (JS/TS)
+name: Coverage (JS/TS/Python)
 description: Parses a coverage report and gates on a percentage threshold.
 
 inputs:
   language:
-    description: "Language to check coverage for. Only js/ts are implemented in this version."
+    description: "Language to check coverage for. js, ts and python are implemented in this version."
     required: true
   working_dir:
     description: "Directory the coverage report belongs to, relative to repo root."
@@ -28,7 +30,7 @@ inputs:
     description: "Minimum required 'lines' coverage percentage."
     required: true
   coverage_file:
-    description: "Path (relative to working_dir) to a specific coverage report. Default: auto-detect coverage/lcov.info then coverage/coverage-summary.json."
+    description: "Path (relative to working_dir) to a specific coverage report. Default: js/ts auto-detect coverage/lcov.info then coverage/coverage-summary.json; python uses coverage/coverage.xml."
     required: false
     default: ''
 
@@ -45,9 +47,9 @@ runs:
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
-          js|ts)
+          js|ts|python)
             ;; # implemented by this action
-          python|flutter|unity)
+          flutter|unity)
             die "language '${LANGUAGE}' is not yet implemented in this version"
             ;;
           *)
@@ -84,6 +86,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_dir }}
       env:
+        LANGUAGE: ${{ inputs.language }}
         COVERAGE_FILE: ${{ inputs.coverage_file }}
       run: |
         set -euo pipefail
@@ -92,13 +95,28 @@ runs:
         if [ -n "${COVERAGE_FILE}" ]; then
           require_file "${COVERAGE_FILE}"
           echo "path=${COVERAGE_FILE}" >> "$GITHUB_OUTPUT"
-        elif [ -f coverage/lcov.info ]; then
-          echo "path=coverage/lcov.info" >> "$GITHUB_OUTPUT"
-        elif [ -f coverage/coverage-summary.json ]; then
-          echo "path=coverage/coverage-summary.json" >> "$GITHUB_OUTPUT"
-        else
-          die "no coverage file was produced. Expected coverage/lcov.info or coverage/coverage-summary.json under '$(pwd)' (or set coverage_file explicitly). Never treating a missing file as 0% or as a pass."
+          exit 0
         fi
+        case "${LANGUAGE}" in
+          js|ts)
+            # lcov (jest/vitest) first, then Istanbul json-summary
+            if [ -f coverage/lcov.info ]; then
+              echo "path=coverage/lcov.info" >> "$GITHUB_OUTPUT"
+            elif [ -f coverage/coverage-summary.json ]; then
+              echo "path=coverage/coverage-summary.json" >> "$GITHUB_OUTPUT"
+            else
+              die "no coverage file was produced. Expected coverage/lcov.info or coverage/coverage-summary.json under '$(pwd)' (or set coverage_file explicitly). Never treating a missing file as 0% or as a pass."
+            fi
+            ;;
+          python)
+            # Cobertura XML written by pytest-cov in the unit-test action
+            if [ -f coverage/coverage.xml ]; then
+              echo "path=coverage/coverage.xml" >> "$GITHUB_OUTPUT"
+            else
+              die "no coverage file was produced. Expected coverage/coverage.xml under '$(pwd)' (or set coverage_file explicitly) — the unit-test action writes it when pytest-cov is installed, so add pytest-cov to requirements.txt. Never treating a missing file as 0% or as a pass."
+            fi
+            ;;
+        esac
 
     - name: Parse coverage and compare to threshold
       id: parse

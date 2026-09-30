@@ -111,6 +111,45 @@ assert_contains "detect_package_manager names all three accepted lockfiles" "pac
 
 rm -rf "${pm_dir}"
 
+
+# --- detect_python_install_source() ---
+py_dir="$(mktemp -d)"
+
+run_case "detect_python_install_source dies when neither file exists" 1 \
+  "source '${lib_path}'; detect_python_install_source '${py_dir}'"
+assert_contains "detect_python_install_source names both accepted files" "requirements.txt or a pyproject.toml"
+
+touch "${py_dir}/pyproject.toml"
+run_case "detect_python_install_source finds pyproject.toml" 0 \
+  "source '${lib_path}'; [ \"\$(detect_python_install_source '${py_dir}')\" = pyproject.toml ]"
+
+touch "${py_dir}/requirements.txt"
+run_case "detect_python_install_source prefers requirements.txt when both exist" 0 \
+  "source '${lib_path}'; [ \"\$(detect_python_install_source '${py_dir}')\" = requirements.txt ]"
+
+rm -rf "${py_dir}"
+
+# --- detect_python_scan_files() ---
+scan_dir="$(mktemp -d)"
+
+run_case "detect_python_scan_files dies when no dependency file exists" 1 \
+  "source '${lib_path}'; detect_python_scan_files '${scan_dir}'"
+assert_contains "detect_python_scan_files names all three accepted files" "requirements.txt, poetry.lock, or Pipfile.lock"
+
+touch "${scan_dir}/pyproject.toml"
+run_case "detect_python_scan_files ignores pyproject.toml (not scannable)" 1 \
+  "source '${lib_path}'; detect_python_scan_files '${scan_dir}'"
+
+touch "${scan_dir}/Pipfile.lock"
+run_case "detect_python_scan_files finds Pipfile.lock" 0 \
+  "source '${lib_path}'; [ \"\$(detect_python_scan_files '${scan_dir}')\" = Pipfile.lock ]"
+
+touch "${scan_dir}/requirements.txt" "${scan_dir}/poetry.lock"
+run_case "detect_python_scan_files lists every file present, in a stable order" 0 \
+  "source '${lib_path}'; [ \"\$(detect_python_scan_files '${scan_dir}')\" = 'requirements.txt poetry.lock Pipfile.lock' ]"
+
+rm -rf "${scan_dir}"
+
 if [ "${failures}" -eq 0 ]; then
   echo "All tests passed."
   exit 0

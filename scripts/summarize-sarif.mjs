@@ -13,6 +13,8 @@
 // Usage:
 //   node summarize-sarif.mjs <sarif-file> table
 //   node summarize-sarif.mjs <sarif-file> annotations [maxAnnotations] [--no-message]
+//   node summarize-sarif.mjs <sarif-file> count
+//   node summarize-sarif.mjs <sarif-file> relativize [out-file]
 //
 // "table" mode prints a markdown table to stdout (or "No findings." if
 // there are none) — callers append it to $GITHUB_STEP_SUMMARY themselves.
@@ -25,17 +27,49 @@
 // artifact, and a gitleaks finding's message can carry more detail about
 // the match than should be broadcast that widely.
 //
+// "count" mode prints the number of results — lets a caller tell a tool that
+// exited non-zero because it found something from one that crashed before
+// it found anything (some tools, e.g. ruff, use exit code 1 for both).
+// "relativize" mode rewrites every absolute file:// artifact URI under
+// $GITHUB_WORKSPACE to a repo-relative path (in place unless out-file is
+// given). Some tools (ruff) emit absolute URIs; GitHub annotations and code
+// scanning both want repo-relative ones. Annotations/table output is always
+// relativized the same way, without needing this mode.
+//
 // Exits 0 once the file is successfully parsed as SARIF-shaped JSON,
 // regardless of finding count. Exits 1 (message on stderr) if the file
 // can't be read or doesn't look like SARIF output.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-// extractResults(sarifJson) -> flat array of {ruleId, level, message, file, line}
+// toRepoRelativePath(uri, workspace) -> a repo-relative path when `uri` is an
+// absolute file:// URI under `workspace` (handles POSIX and Windows drive
+// forms, percent-encoding and backslashes); any other uri — already relative,
+// or outside the workspace — is returned unchanged.
+export function toRepoRelativePath(uri, workspace) {
+  if (typeof uri !== 'string' || !uri.startsWith('file:') || !workspace) return uri;
+  let path = uri.replace(/^file:\/\/\/?/, '');
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    return uri; // malformed percent-encoding: leave it alone rather than guess
+  }
+  path = path.replace(/\\/g, '/');
+  const isDrivePath = (x) => /^[A-Za-z]:\//.test(x);
+  // file:///C:/x -> "C:/x" (drive form, no leading slash); file:///home/x -> "/home/x"
+  if (!isDrivePath(path)) path = `/${path}`;
+  const root = workspace.replace(/\\/g, '/').replace(/\/+$/, '');
+  const fold = (x) => (isDrivePath(x) ? x.toLowerCase() : x); // drive letters are case-insensitive
+  if (fold(path).startsWith(`${fold(root)}/`)) return path.slice(root.length + 1);
+  return uri;
+}
+
+// extractResults(sarifJson, opts) -> flat array of {ruleId, level, message, file, line}
 // across every run in the file (SARIF allows multiple `runs`; every tool we
-// invoke produces exactly one, but we don't assume that here).
-export function extractResults(sarifJson) {
+// invoke produces exactly one, but we don't assume that here). File paths
+// are made repo-relative against opts.workspace (default $GITHUB_WORKSPACE).
+export function extractResults(sarifJson, { workspace = process.env.GITHUB_WORKSPACE } = {}) {
   if (!sarifJson || typeof sarifJson !== 'object' || Array.isArray(sarifJson)) {
     throw new Error('expected a JSON object — this does not look like SARIF output');
   }
@@ -52,7 +86,7 @@ export function extractResults(sarifJson) {
         // SARIF's own default when a result omits `level` is 'warning'.
         level: result.level ?? 'warning',
         message: result.message?.text ?? '(no message)',
-        file: location?.artifactLocation?.uri ?? '(unknown file)',
+        file: toRepoRelativePath(location?.artifactLocation?.uri, workspace) ?? '(unknown file)',
         line: location?.region?.startLine ?? null,
       });
     }
@@ -110,10 +144,27 @@ export function formatAnnotations(results, { maxAnnotations = 15, includeMessage
   });
 }
 
+// relativizeSarif(sarifJson, workspace) -> the same object with every
+// artifactLocation.uri made repo-relative (mutates and returns it).
+export function relativizeSarif(sarifJson, workspace) {
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node && typeof node === 'object') {
+      if (node.artifactLocation && typeof node.artifactLocation.uri === 'string') {
+        node.artifactLocation.uri = toRepoRelativePath(node.artifactLocation.uri, workspace);
+      }
+      Object.values(node).forEach(walk);
+    }
+  };
+  walk(sarifJson);
+  return sarifJson;
+}
+
 function main() {
   const [, , filePath, mode, ...rest] = process.argv;
-  if (!filePath || !['table', 'annotations'].includes(mode)) {
-    console.error('usage: node summarize-sarif.mjs <sarif-file> table|annotations [maxAnnotations] [--no-message]');
+  if (!filePath || !['table', 'annotations', 'count', 'relativize'].includes(mode)) {
+    console.error('usage: node summarize-sarif.mjs <sarif-file> table|annotations|count|relativize [maxAnnotations|out-file] [--no-message]');
     process.exit(1);
   }
 
@@ -125,12 +176,28 @@ function main() {
     process.exit(1);
   }
 
+  if (mode === 'relativize') {
+    try {
+      const out = rest.find((a) => !a.startsWith('--')) ?? filePath;
+      writeFileSync(out, JSON.stringify(relativizeSarif(JSON.parse(text), process.env.GITHUB_WORKSPACE), null, 2));
+    } catch (err) {
+      console.error(`could not relativize '${filePath}': ${err.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   let results;
   try {
     results = extractResults(JSON.parse(text));
   } catch (err) {
     console.error(`could not parse '${filePath}' as SARIF: ${err.message}`);
     process.exit(1);
+  }
+
+  if (mode === 'count') {
+    console.log(results.length);
+    return;
   }
 
   if (mode === 'table') {

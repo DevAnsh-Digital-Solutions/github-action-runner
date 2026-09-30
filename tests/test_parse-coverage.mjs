@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   parseLcov,
   parseJsonSummary,
+  parseCobertura,
   parseCoverageText,
   buildResult,
 } from '../scripts/parse-coverage.mjs';
@@ -114,6 +115,51 @@ test('buildResult throws when lines total is zero — never silently 0% or passi
     () => buildResult({ lines: { covered: 0, total: 0 }, branches: { covered: 0, total: 0 }, functions: { covered: 0, total: 0 } }, 80),
     /zero total lines/,
   );
+});
+
+const COBERTURA_SAMPLE = `<?xml version="1.0" ?>
+<coverage version="7.6.0" timestamp="1700000000000" lines-valid="40" lines-covered="34" line-rate="0.85" branches-covered="6" branches-valid="10" branch-rate="0.6" complexity="0">
+\t<sources>
+\t\t<source>/work/src</source>
+\t</sources>
+\t<packages>
+\t\t<package name="demo" line-rate="0.85" branch-rate="0.6" complexity="0">
+\t\t\t<classes/>
+\t\t</package>
+\t</packages>
+</coverage>
+`;
+
+test('parseCobertura reads the root <coverage> aggregate attributes', () => {
+  const totals = parseCobertura(COBERTURA_SAMPLE);
+  assert.deepEqual(totals.lines, { covered: 34, total: 40 });
+  assert.deepEqual(totals.branches, { covered: 6, total: 10 });
+  assert.deepEqual(totals.functions, { covered: 0, total: 0 });
+});
+
+test('parseCobertura treats missing branch attributes as 0/0 (branch coverage disabled)', () => {
+  const totals = parseCobertura('<coverage lines-valid="10" lines-covered="9" line-rate="0.9"></coverage>');
+  assert.deepEqual(totals.branches, { covered: 0, total: 0 });
+});
+
+test('parseCobertura throws when there is no <coverage> element or no line counts', () => {
+  assert.throws(() => parseCobertura('<html></html>'), /no <coverage> root element/);
+  assert.throws(() => parseCobertura('<coverage version="1"></coverage>'), /no lines-valid\/lines-covered/);
+});
+
+test('parseCoverageText auto-detects Cobertura XML and buildResult gates on it', () => {
+  const totals = parseCoverageText(COBERTURA_SAMPLE);
+  assert.equal(buildResult(totals, 80).passed, true); // 34/40 = 85%
+  assert.equal(buildResult(totals, 90).passed, false);
+  assert.equal(buildResult(totals, 80).functions.pct, null); // N/A, never 0%
+});
+
+test('parseCoverageText tolerates leading whitespace before the XML declaration body', () => {
+  assert.equal(parseCoverageText(`\n  ${COBERTURA_SAMPLE}`).lines.covered, 34);
+});
+
+test('buildResult throws on a Cobertura report with zero valid lines', () => {
+  assert.throws(() => buildResult(parseCobertura('<coverage lines-valid="0" lines-covered="0"></coverage>'), 80), /zero total lines/);
 });
 
 if (failures === 0) {
