@@ -176,7 +176,7 @@ test('toRepoRelativePath strips a POSIX workspace prefix', () => {
 });
 
 test('toRepoRelativePath handles Windows drive paths and percent-encoding', () => {
-  assert.equal(toRepoRelativePath('file:///E:/Job/py/src/a%20b.py', 'e:\Job\py'), 'src/a b.py');
+  assert.equal(toRepoRelativePath('file:///E:/Job/py/src/a%20b.py', String.raw`e:\Job\py`), 'src/a b.py');
 });
 
 test('toRepoRelativePath leaves relative URIs, outside-workspace paths and no-workspace calls alone', () => {

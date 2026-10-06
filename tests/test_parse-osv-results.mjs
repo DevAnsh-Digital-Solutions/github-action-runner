@@ -9,6 +9,12 @@ import {
   severityBucket,
   extractVulnerabilities,
   summarize,
+  summarizeFindings,
+  compareVersions,
+  fixedVersion,
+  extractFindings,
+  formatFindingsMarkdown,
+  formatFindingsText,
 } from '../scripts/parse-osv-results.mjs';
 
 let failures = 0;

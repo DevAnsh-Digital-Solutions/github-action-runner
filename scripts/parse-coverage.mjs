@@ -72,12 +72,13 @@ export function parseJsonSummary(json) {
 // reported as N/A downstream — never as 0%. Regex, not an XML parser: this
 // repo has no dependency tree, and only the root element's attributes are read.
 export function parseCobertura(text) {
-  const root = text.match(/<coverage[^>]*>/);
+  const root = text.match(/<coverage(?=[\s>])[^>]*>/);
   if (!root) {
     throw new Error('no <coverage> root element found — this does not look like a Cobertura XML report');
   }
   const attr = (name) => {
-    const m = root[0].match(new RegExp(`\b${name}="([^"]*)"`));
+    // (?:^|\s) so 'lines-valid' can't match inside a longer attribute name.
+    const m = root[0].match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
     return m ? Number(m[1]) : null;
   };
   const linesValid = attr('lines-valid');
