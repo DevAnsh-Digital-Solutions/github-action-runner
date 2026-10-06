@@ -49,18 +49,17 @@ import { pathToFileURL } from 'node:url';
 // or outside the workspace — is returned unchanged.
 export function toRepoRelativePath(uri, workspace) {
   if (typeof uri !== 'string' || !uri.startsWith('file:') || !workspace) return uri;
-  let path = uri.replace(/^file:\/\/\/?/, '');
+  let path = uri.replace(/^file:///?/, '');
   try {
     path = decodeURIComponent(path);
   } catch {
     return uri; // malformed percent-encoding: leave it alone rather than guess
   }
-  path = path.replace(/\\/g, '/');
-  const isDrivePath = (x) => /^[A-Za-z]:\//.test(x);
+  path = path.replace(/\/g, '/');
   // file:///C:/x -> "C:/x" (drive form, no leading slash); file:///home/x -> "/home/x"
-  if (!isDrivePath(path)) path = `/${path}`;
-  const root = workspace.replace(/\\/g, '/').replace(/\/+$/, '');
-  const fold = (x) => (isDrivePath(x) ? x.toLowerCase() : x); // drive letters are case-insensitive
+  if (!/^[A-Za-z]://.test(path)) path = `/${path}`;
+  const root = workspace.replace(/\/g, '/').replace(//+$/, '');
+  const fold = (x) => (/^[A-Za-z]://.test(x) ? x.toLowerCase() : x); // drive letters are case-insensitive
   if (fold(path).startsWith(`${fold(root)}/`)) return path.slice(root.length + 1);
   return uri;
 }

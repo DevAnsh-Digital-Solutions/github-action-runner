@@ -1,51 +1,30 @@
 # .github/actions/setup/action.yml
 #
-# What: Installs the language toolchain and project dependencies. Not a
-#       "check" itself — a prerequisite step other check actions in this job
-#       run after.
-#       js/ts:  detects the package manager from whichever lockfile is
-#               present and uses its matching install command.
-#       python: installs Python (actions/setup-python, with pip caching keyed
-#               on the dependency file) and then the project's dependencies
-#               from requirements.txt, or from pyproject.toml when there is
-#               no requirements.txt.
-# Languages: js, ts, python. flutter/unity hard-fail as not yet implemented;
-#        any other `language` value hard-fails with the supported list.
-# Needs: js/ts: a lockfile (package-lock.json, pnpm-lock.yaml, or yarn.lock)
-#        in `working_dir`.
-#        python: requirements.txt or pyproject.toml in `working_dir`. The
-#        linter/test tools the later checks use (ruff, pytest, pytest-cov)
-#        must be declared in that file — this action never installs them
-#        behind the project's back, so the versions CI uses are the versions
-#        the project pins.
-#        No secrets required.
-# Exits non-zero on: an unsupported/not-yet-implemented `language`, a missing
-#        lockfile / Python dependency file, an invalid `pip_extras`, or the
-#        install command itself failing (bad dependency, registry/network
-#        failure, etc).
-name: Setup (JS/TS/Python)
-description: Installs the toolchain and project dependencies for a JS/TS or Python project.
+# What: Installs the JS/TS toolchain (Node.js) and project dependencies.
+#       Not a "check" itself — a prerequisite step other check actions in
+#       this job run after. Detects the package manager from whichever
+#       lockfile is present and uses its matching install command.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: a lockfile (package-lock.json, pnpm-lock.yaml, or yarn.lock) in
+#        `working_dir`. No secrets required.
+# Exits non-zero on: an unsupported/not-yet-implemented `language`, a
+#        missing lockfile, or the install command itself failing (bad
+#        dependency, registry/network failure, etc).
+name: Setup (JS/TS)
+description: Installs Node.js and project dependencies for a JS/TS project.
 
 inputs:
   language:
-    description: "Language to set up. js, ts and python are implemented in this version."
+    description: "Language to set up. Only js/ts are implemented in this version."
     required: true
   working_dir:
-    description: "Directory containing package.json / requirements.txt / pyproject.toml, relative to repo root."
+    description: "Directory containing package.json / the lockfile, relative to repo root."
     required: false
     default: '.'
   node_version:
-    description: "Node.js version to install for js/ts, passed straight to actions/setup-node."
+    description: "Node.js version to install, passed straight to actions/setup-node."
     required: false
     default: '20'
-  python_version:
-    description: "Python version to install for python, passed straight to actions/setup-python."
-    required: false
-    default: '3.12'
-  pip_extras:
-    description: "Comma-separated pyproject.toml extras to install (pip install -e '.[extras]') when there is no requirements.txt. Empty installs the project without extras."
-    required: false
-    default: 'dev'
 
 runs:
   using: composite
@@ -54,33 +33,22 @@ runs:
       shell: bash
       env:
         LANGUAGE: ${{ inputs.language }}
-        PIP_EXTRAS: ${{ inputs.pip_extras }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
-          js|ts|python)
+          js|ts)
             ;; # implemented by this action
-          flutter|unity)
+          python|flutter|unity)
             die "language '${LANGUAGE}' is not yet implemented in this version"
             ;;
           *)
             die "unsupported language '${LANGUAGE}'. Supported values: js ts python flutter unity"
             ;;
         esac
-        # The extras string is spliced into a pip requirement spec below, so
-        # restrict it to what a real extras list can contain.
-        case "${PIP_EXTRAS}" in
-          *[!A-Za-z0-9_,.-]*) die "invalid pip_extras '${PIP_EXTRAS}'. Expected a comma-separated list of extra names, e.g. 'dev' or 'dev,test'." ;;
-        esac
-
-    # --- JS/TS ---------------------------------------------------------
-    # Steps below that install a toolchain via `uses:` cannot branch with a
-    # shell `case`, so each language's steps are gated on `language` instead.
 
     - name: Detect package manager
-      if: inputs.language == 'js' || inputs.language == 'ts'
       id: detect
       shell: bash
       env:
@@ -102,7 +70,6 @@ runs:
         fi
 
     - name: Set up Node.js
-      if: inputs.language == 'js' || inputs.language == 'ts'
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ inputs.node_version }}
@@ -110,7 +77,6 @@ runs:
         cache-dependency-path: ${{ inputs.working_dir }}/package-lock.json
 
     - name: Install dependencies
-      if: inputs.language == 'js' || inputs.language == 'ts'
       shell: bash
       working-directory: ${{ inputs.working_dir }}
       env:
@@ -141,60 +107,5 @@ runs:
             ;;
           *)
             die "internal error: unrecognized package manager '${MANAGER}' from the detect step"
-            ;;
-        esac
-
-    # --- Python --------------------------------------------------------
-
-    - name: Detect Python dependency file
-      if: inputs.language == 'python'
-      id: detect_python
-      shell: bash
-      env:
-        WORKING_DIR: ${{ inputs.working_dir }}
-      run: |
-        set -euo pipefail
-        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
-        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        source_file="$(detect_python_install_source "${WORKING_DIR}")"
-        echo "source=${source_file}" >> "$GITHUB_OUTPUT"
-
-    - name: Set up Python
-      if: inputs.language == 'python'
-      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-      with:
-        python-version: ${{ inputs.python_version }}
-        cache: pip
-        # The cache key hashes this file, so a dependency change busts the cache.
-        cache-dependency-path: ${{ inputs.working_dir }}/${{ steps.detect_python.outputs.source }}
-
-    - name: Install Python dependencies
-      if: inputs.language == 'python'
-      shell: bash
-      working-directory: ${{ inputs.working_dir }}
-      env:
-        SOURCE_FILE: ${{ steps.detect_python.outputs.source }}
-        PIP_EXTRAS: ${{ inputs.pip_extras }}
-      run: |
-        set -euo pipefail
-        # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
-        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        require_cmd python "actions/setup-python above should have installed it"
-        case "${SOURCE_FILE}" in
-          requirements.txt)
-            # pip: install exactly what requirements.txt lists
-            python -m pip install -r requirements.txt
-            ;;
-          pyproject.toml)
-            # pip: editable install of the project itself, plus the extras
-            # that carry its dev tooling (ruff/pytest/pytest-cov) if any
-            if [ -n "${PIP_EXTRAS}" ]; then
-              python -m pip install -e ".[${PIP_EXTRAS}]"
-            else
-              python -m pip install -e .
-            fi
-            ;;
-          *)
-            die "internal error: unrecognized Python dependency file '${SOURCE_FILE}' from the detect step"
             ;;
         esac

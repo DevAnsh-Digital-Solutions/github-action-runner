@@ -1,41 +1,32 @@
 # .github/actions/unit-test/action.yml
 #
-# What: Runs the project's test suite and publishes a pass/fail summary to
-#       $GITHUB_STEP_SUMMARY. js/ts: auto-detects Jest vs Vitest. python:
-#       runs pytest. Always collects coverage as a side effect and uploads it
-#       as the "coverage-report" workflow artifact, which
+# What: Runs the project's test suite (auto-detecting Jest vs Vitest) and
+#       publishes a pass/fail summary to $GITHUB_STEP_SUMMARY. Always
+#       collects coverage (lcov + json-summary reporters) as a side effect
+#       and uploads it as the "coverage-report" workflow artifact, which
 #       .github/actions/coverage/ downloads and parses — coverage is a
 #       pure parser with no test-running inputs of its own, so this is the
 #       only place a coverage file gets produced.
-#       (js/ts write lcov + json-summary under coverage/; python writes
-#       Cobertura XML to coverage/coverage.xml via pytest-cov.)
-# Languages: js, ts, python. flutter/unity hard-fail as not yet implemented;
-#        any other `language` value hard-fails with the supported list.
-# Needs: js/ts: jest or vitest as a devDependency (or config file).
-#        python: pytest installed (declare it in requirements.txt or the
-#        pyproject.toml extras the setup action installs) and at least one
-#        collectable test. pytest-cov is needed only for coverage: without
-#        it tests still run, a warning is logged, and the coverage check (if
-#        enabled) then fails clearly for lack of a report.
+# Languages: js, ts. Any other `language` value hard-fails — see below.
+# Needs: jest or vitest as a devDependency (or config file), unless
 #        `test_command` overrides detection entirely. No secrets required.
 # Exits non-zero on: an unsupported/not-yet-implemented `language`, no test
 #        runner detected (and no override given), both jest and vitest
-#        detected ambiguously, pytest missing, pytest collecting no tests, the
-#        runner itself crashing (distinct from failing tests), or real test
-#        failures.
-name: Unit Test (JS/TS/Python)
-description: Runs Jest, Vitest or pytest and publishes a summary; always collects coverage.
+#        detected ambiguously, the runner itself crashing (distinct from
+#        failing tests), or real test failures.
+name: Unit Test (JS/TS)
+description: Runs Jest or Vitest and publishes a summary; always collects coverage.
 
 inputs:
   language:
-    description: "Language to test. js, ts and python are implemented in this version."
+    description: "Language to test. Only js/ts are implemented in this version."
     required: true
   working_dir:
     description: "Directory containing the project to test, relative to repo root."
     required: false
     default: '.'
   test_command:
-    description: "Optional override command to run instead of the auto-detected runner."
+    description: "Optional override command to run instead of auto-detected jest/vitest."
     required: false
     default: ''
 
@@ -51,9 +42,9 @@ runs:
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         case "${LANGUAGE}" in
-          js|ts|python)
+          js|ts)
             ;; # implemented by this action
-          flutter|unity)
+          python|flutter|unity)
             die "language '${LANGUAGE}' is not yet implemented in this version"
             ;;
           *)
@@ -66,7 +57,6 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_dir }}
       env:
-        LANGUAGE: ${{ inputs.language }}
         TEST_COMMAND: ${{ inputs.test_command }}
       run: |
         set -euo pipefail
@@ -75,101 +65,62 @@ runs:
 
         if [ -n "${TEST_COMMAND}" ]; then
           echo "runner=custom" >> "$GITHUB_OUTPUT"
-          echo "cov=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        case "${LANGUAGE}" in
-          js|ts)
-            # Jest or Vitest, whichever the project declares
-            require_file package.json
+        require_file package.json
 
-            has_jest="false"
-            has_vitest="false"
-            if grep -qE '"jest"\s*:' package.json || [ -f jest.config.js ] || [ -f jest.config.ts ] || [ -f jest.config.mjs ] || [ -f jest.config.cjs ] || [ -f jest.config.json ]; then
-              has_jest="true"
-            fi
-            if grep -qE '"vitest"\s*:' package.json || [ -f vitest.config.js ] || [ -f vitest.config.ts ] || [ -f vitest.config.mjs ] || [ -f vitest.config.cjs ]; then
-              has_vitest="true"
-            fi
+        has_jest="false"
+        has_vitest="false"
+        if grep -qE '"jest"\s*:' package.json || [ -f jest.config.js ] || [ -f jest.config.ts ] || [ -f jest.config.mjs ] || [ -f jest.config.cjs ] || [ -f jest.config.json ]; then
+          has_jest="true"
+        fi
+        if grep -qE '"vitest"\s*:' package.json || [ -f vitest.config.js ] || [ -f vitest.config.ts ] || [ -f vitest.config.mjs ] || [ -f vitest.config.cjs ]; then
+          has_vitest="true"
+        fi
 
-            if [ "${has_jest}" = "true" ] && [ "${has_vitest}" = "true" ]; then
-              die "both jest and vitest were detected in '$(pwd)' — ambiguous. Pass the test_command input to pick one explicitly."
-            elif [ "${has_jest}" = "true" ]; then
-              echo "runner=jest" >> "$GITHUB_OUTPUT"
-            elif [ "${has_vitest}" = "true" ]; then
-              echo "runner=vitest" >> "$GITHUB_OUTPUT"
-            else
-              die "no test runner detected in '$(pwd)' (checked package.json dependencies and jest.config.*/vitest.config.* files). Add jest or vitest as a devDependency, or pass the test_command input."
-            fi
-            echo "cov=true" >> "$GITHUB_OUTPUT"
-            ;;
-          python)
-            # pytest (+ pytest-cov for the coverage report)
-            require_cmd python "actions/setup-python, run by the setup action, should have installed it"
-            if ! python -c "import pytest" >/dev/null 2>&1; then
-              die "pytest is not installed in '$(pwd)'s Python environment. Add pytest to requirements.txt (or to the pyproject.toml extras named by the setup action's pip_extras), or pass the test_command input."
-            fi
-            echo "runner=pytest" >> "$GITHUB_OUTPUT"
-            if python -c "import pytest_cov" >/dev/null 2>&1; then
-              echo "cov=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "cov=false" >> "$GITHUB_OUTPUT"
-              echo "::warning::pytest-cov is not installed, so no coverage report will be produced. Add pytest-cov to requirements.txt if the coverage check is enabled."
-            fi
-            ;;
-        esac
+        if [ "${has_jest}" = "true" ] && [ "${has_vitest}" = "true" ]; then
+          die "both jest and vitest were detected in '$(pwd)' — ambiguous. Pass the test_command input to pick one explicitly."
+        elif [ "${has_jest}" = "true" ]; then
+          echo "runner=jest" >> "$GITHUB_OUTPUT"
+        elif [ "${has_vitest}" = "true" ]; then
+          echo "runner=vitest" >> "$GITHUB_OUTPUT"
+        else
+          die "no test runner detected in '$(pwd)' (checked package.json dependencies and jest.config.*/vitest.config.* files). Add jest or vitest as a devDependency, or pass the test_command input."
+        fi
 
     - name: Run tests
       id: run
       # GitHub's default `shell: bash` invokes `bash -eo pipefail {0}` — -e
       # is already active before our own `set` line runs and would abort
-      # this step the instant the runner exits non-zero, before we can
+      # this step the instant jest/vitest exits non-zero, before we can
       # capture its exit code below. Override the invocation to drop -e.
       shell: bash --noprofile --norc -o pipefail {0}
       continue-on-error: true
       working-directory: ${{ inputs.working_dir }}
       env:
         RUNNER: ${{ steps.detect.outputs.runner }}
-        HAS_COV: ${{ steps.detect.outputs.cov }}
         TEST_COMMAND: ${{ inputs.test_command }}
       run: |
         set -uo pipefail # no -e: we capture the runner's exit code ourselves below
-        code=0
         case "${RUNNER}" in
           custom)
             # Consumer-controlled command from this repo's own workflow config
             # (not PR-supplied content), so running it directly is safe.
             bash -c "${TEST_COMMAND}"
-            code=$?
             ;;
           jest)
             npx --no-install jest --ci \
               --coverage --coverageReporters=lcov --coverageReporters=json-summary \
               --json --outputFile=jest-results.json
-            code=$?
             ;;
           vitest)
             npx --no-install vitest run \
               --coverage --coverage.reporter=lcov --coverage.reporter=json-summary \
               --reporter=json --outputFile=vitest-results.json
-            code=$?
-            ;;
-          pytest)
-            # `python -m pytest` (not bare `pytest`) puts the working dir on
-            # sys.path, so flat-layout projects import without an install.
-            # Coverage is Cobertura XML: the format coverage.py/pytest-cov
-            # support on every version, parsed by scripts/parse-coverage.mjs.
-            cov_flags=()
-            if [ "${HAS_COV}" = "true" ]; then
-              mkdir -p coverage
-              cov_flags+=(--cov --cov-report=xml:coverage/coverage.xml)
-            fi
-            python -m pytest --junitxml=pytest-results.xml "${cov_flags[@]}"
-            code=$?
             ;;
         esac
-        echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Classify result
       id: classify
@@ -188,7 +139,6 @@ runs:
         case "${RUNNER}" in
           jest) results_file="jest-results.json" ;;
           vitest) results_file="vitest-results.json" ;;
-          pytest) results_file="pytest-results.xml" ;;
         esac
 
         if [ -z "${EXIT_CODE}" ]; then
@@ -196,11 +146,6 @@ runs:
           die "the test command did not report an exit code at all — treating this as a crash."
         elif [ "${EXIT_CODE}" -eq 0 ]; then
           echo "outcome=pass" >> "$GITHUB_OUTPUT"
-        elif [ "${RUNNER}" = "pytest" ] && [ "${EXIT_CODE}" -eq 5 ]; then
-          # pytest's own code for "no tests collected": a setup problem, not
-          # a test failure, and never to be reported as a pass.
-          echo "outcome=crash" >> "$GITHUB_OUTPUT"
-          die "pytest collected no tests in '$(pwd)'. Add tests named test_*.py or *_test.py (check testpaths in pyproject.toml / pytest.ini), or pass the test_command input."
         elif [ "${EXIT_CODE}" -ne 1 ]; then
           echo "outcome=crash" >> "$GITHUB_OUTPUT"
           die "the test command exited with code '${EXIT_CODE}', which is neither a clean pass (0) nor a normal test-failure exit (1) — treating this as a crash. Check the 'Run tests' step's log above."
@@ -227,18 +172,10 @@ runs:
         case "${RUNNER}" in
           jest) results_file="jest-results.json" ;;
           vitest) results_file="vitest-results.json" ;;
-          pytest) results_file="pytest-results.xml" ;;
         esac
 
         summary "### Unit tests: ${OUTCOME}"
-        if [ "${RUNNER}" = "pytest" ]; then
-          # Totals plus the failing tests' names and messages, from the JUnit
-          # XML pytest wrote; annotations surface the failures on the PR.
-          require_cmd node "the JUnit summarizer needs it; it is preinstalled on GitHub-hosted runners"
-          table="$(node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-junit.mjs" "${results_file}" table)"
-          summary "${table}"
-          node "${GITHUB_ACTION_PATH}/../../../scripts/summarize-junit.mjs" "${results_file}" annotations 15
-        elif [ -n "${results_file}" ] && [ -f "${results_file}" ]; then
+        if [ -n "${results_file}" ] && [ -f "${results_file}" ]; then
           # shellcheck disable=SC2016 # single-quoted on purpose: this is JS for `node -e`, not a bash expansion
           table="$(node -e '
             const fs = require("fs");
@@ -260,7 +197,7 @@ runs:
       with:
         name: coverage-report
         path: ${{ inputs.working_dir }}/coverage/
-        if-no-files-found: warn # a custom test_command (or python without pytest-cov) may not produce coverage/ at all
+        if-no-files-found: warn # a custom test_command may not produce coverage/ at all
         retention-days: 7
 
     - name: Enforce test result
