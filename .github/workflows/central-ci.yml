@@ -27,11 +27,11 @@
 #
 # !! PRE-RELEASE REF — UPDATE BEFORE MERGING TO main !!
 # On the Feature/Phase-2 branch the references below point at the
-# pre-release tag `@v1.1.0-rc.1`, so a consumer calling this workflow at
+# pre-release tag `@v1.1.0-rc.2`, so a consumer calling this workflow at
 # that same tag runs exactly the actions in this commit (pointing them at
 # @main would silently test the old code). Each new pre-release (rc.2, ...)
 # needs these refs bumped in the commit that is tagged. At release time,
-# change every `@v1.1.0-rc.1` in this file to the final release tag
+# change every `@v1.1.0-rc.2` in this file to the final release tag
 # (`@v1.1.0`, or `@v1` once the moving major tag is advanced).
 name: Central CI
 
@@ -156,13 +156,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Lint
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -178,13 +178,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Unit test
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -200,13 +200,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Coverage
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -225,13 +225,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Dependency scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@v1.1.0-rc.2
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -253,6 +253,6 @@ jobs:
           # and for the pull_request mode to be able to diff base..head.
           fetch-depth: 0
       - name: Secret scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@v1.1.0-rc.1
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@v1.1.0-rc.2
         with:
           working_dir: ${{ inputs.working_dir }}
