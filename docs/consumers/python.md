@@ -1,8 +1,10 @@
 # Consumer workflow: Python
 
-Copy one of the variants below into your repo as `.github/workflows/ci.yml`,
-replacing `<org>` with this repo's actual organization/name and `@v1` with
-the ref you want to pin to (see [Versioning](../../README.md#versioning)).
+Copy one of the variants below into your repo as `.github/workflows/ci.yml`.
+Replace `@v1` with the ref you want to pin to. **`v1` has not been tagged
+yet**, so use the current pre-release (`@v1.1.0-rc.2`) for now; see
+[Status and versions](../../README.md#status-and-versions) and
+[Versioning](../../README.md#versioning-and-releases).
 
 All three variants implement the Phase-1/2 rows of
 [docs/CHECK-POLICY.md](../CHECK-POLICY.md) — lint, unit tests, coverage,
@@ -31,7 +33,7 @@ permissions:
 
 jobs:
   lint:
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       enable_lint: true
@@ -64,7 +66,7 @@ permissions:
 jobs:
   pr-checks:
     if: github.event_name == 'pull_request'
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       enable_lint: false
@@ -75,7 +77,7 @@ jobs:
 
   push-main-secret-scan:
     if: github.event_name == 'push'
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       enable_lint: false
@@ -86,7 +88,7 @@ jobs:
 
   nightly-dependency-scan:
     if: github.event_name == 'schedule'
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       enable_lint: false
@@ -120,7 +122,7 @@ permissions:
 jobs:
   pr-checks:
     if: github.event_name == 'pull_request'
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       working_dir: '.'
@@ -134,7 +136,7 @@ jobs:
 
   push-main-secret-scan:
     if: github.event_name == 'push'
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       enable_lint: false
@@ -145,7 +147,7 @@ jobs:
 
   nightly-dependency-scan:
     if: github.event_name == 'schedule'
-    uses: <org>/Github-Runner/.github/workflows/central-ci.yml@v1
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
       enable_lint: false
