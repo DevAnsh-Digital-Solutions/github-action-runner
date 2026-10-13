@@ -9,6 +9,12 @@ import {
   severityBucket,
   extractVulnerabilities,
   summarize,
+  summarizeFindings,
+  compareVersions,
+  fixedVersion,
+  extractFindings,
+  formatFindingsMarkdown,
+  formatFindingsText,
 } from '../scripts/parse-osv-results.mjs';
 
 let failures = 0;
@@ -92,6 +98,141 @@ test('summarize throws on an unrecognized threshold label', () => {
 test('summarize is case-insensitive for the threshold label', () => {
   const result = summarize([{ database_specific: { severity: 'HIGH' } }], 'high');
   assert.equal(result.atOrAboveThreshold, 1);
+});
+
+// --- merged findings / table -------------------------------------------------
+// Shapes below mirror real api.osv.dev records for PyPI requests 2.19.0: one
+// vulnerability published as GHSA + PYSEC records that alias each other, the
+// PYSEC record carrying no severity and a GIT range whose `fixed` is a commit.
+const ghsaRecord = {
+  id: 'GHSA-x84v-xcm2-53pg',
+  aliases: ['CVE-2018-18074', 'PYSEC-2018-28'],
+  database_specific: { severity: 'HIGH' },
+  affected: [{ package: { name: 'requests', ecosystem: 'PyPI' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '2.20.0' }] }] }],
+};
+const pysecRecord = {
+  id: 'PYSEC-2018-28',
+  aliases: ['CVE-2018-18074', 'GHSA-x84v-xcm2-53pg'],
+  affected: [{
+    package: { name: 'requests', ecosystem: 'PyPI' },
+    ranges: [
+      { type: 'GIT', events: [{ introduced: '0' }, { fixed: 'c45d7c49ea75133e52ab22a8e9e13173938e36ff' }] },
+      { type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '2.20.0' }] },
+    ],
+  }],
+};
+const moderateRecord = {
+  id: 'GHSA-j8r2-6x86-q33q',
+  aliases: ['CVE-2023-32681'],
+  database_specific: { severity: 'MODERATE' },
+  affected: [{ package: { name: 'requests', ecosystem: 'PyPI' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '2.3.0' }, { fixed: '2.31.0' }] }] }],
+};
+const OSV_SAMPLE = {
+  results: [{
+    source: { path: '/w/requirements.txt', type: 'lockfile' },
+    packages: [
+      { package: { name: 'requests', version: '2.19.0', ecosystem: 'PyPI' }, vulnerabilities: [moderateRecord, ghsaRecord, pysecRecord] },
+      { package: { name: 'jinja2', version: '2.10', ecosystem: 'PyPI' }, vulnerabilities: [{ id: 'PYSEC-X', aliases: [] }] },
+    ],
+  }],
+};
+
+test('compareVersions orders numeric, multi-digit and pre-release versions', () => {
+  assert.ok(compareVersions('2.9', '2.10') < 0);
+  assert.ok(compareVersions('2.20.0', '2.19.0') > 0);
+  assert.equal(compareVersions('1.0', '1.0.0'), 0);
+  assert.ok(compareVersions('1.0rc1', '1.0') < 0);
+  assert.ok(compareVersions('1.0', '1.0.1') < 0);
+});
+
+test('fixedVersion reads the ECOSYSTEM range and ignores GIT commit hashes', () => {
+  assert.equal(fixedVersion([pysecRecord], 'requests', '2.19.0'), '2.20.0');
+});
+
+test('fixedVersion picks the interval that contains the installed version', () => {
+  const vuln = {
+    affected: [{ package: { name: 'pkg' }, ranges: [{ type: 'ECOSYSTEM', events: [
+      { introduced: '0' }, { fixed: '1.5.0' }, { introduced: '2.0.0' }, { fixed: '2.3.0' },
+    ] }] }],
+  };
+  assert.equal(fixedVersion([vuln], 'pkg', '1.2.0'), '1.5.0');
+  assert.equal(fixedVersion([vuln], 'pkg', '2.1.0'), '2.3.0');
+});
+
+test('fixedVersion returns null when the advisory names no fix', () => {
+  const vuln = { affected: [{ package: { name: 'pkg' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }] }] }] };
+  assert.equal(fixedVersion([vuln], 'pkg', '1.0.0'), null);
+  assert.equal(fixedVersion([{}], 'pkg', '1.0.0'), null);
+});
+
+test('extractFindings merges GHSA/PYSEC/CVE records of one vulnerability into one finding', () => {
+  const findings = extractFindings(OSV_SAMPLE);
+  assert.equal(findings.length, 3); // 2 requests vulns (3 records) + 1 jinja2
+  const high = findings.find((f) => f.id === 'GHSA-x84v-xcm2-53pg');
+  assert.equal(high.severity, 'HIGH'); // PYSEC record has none; the GHSA one wins
+  assert.equal(high.cve, 'CVE-2018-18074');
+  assert.equal(high.package, 'requests');
+  assert.equal(high.version, '2.19.0');
+  assert.equal(high.fixedIn, '2.20.0');
+});
+
+test('extractFindings sorts highest severity first, UNKNOWN last', () => {
+  assert.deepEqual(extractFindings(OSV_SAMPLE).map((f) => f.severity), ['HIGH', 'MEDIUM', 'UNKNOWN']);
+});
+
+test('extractFindings falls back to osv-scanner group max_severity when records carry none', () => {
+  const osv = { results: [{ packages: [{
+    package: { name: 'p', version: '1.0', ecosystem: 'PyPI' },
+    vulnerabilities: [{ id: 'PYSEC-1', aliases: [] }],
+    groups: [{ ids: ['PYSEC-1'], max_severity: '9.8' }],
+  }] }] };
+  assert.equal(extractFindings(osv)[0].severity, 'CRITICAL');
+});
+
+test('extractFindings does not merge same-id records across different packages', () => {
+  const osv = { results: [{ packages: [
+    { package: { name: 'a', version: '1', ecosystem: 'npm' }, vulnerabilities: [{ id: 'GHSA-1', aliases: [] }] },
+    { package: { name: 'b', version: '1', ecosystem: 'npm' }, vulnerabilities: [{ id: 'GHSA-1', aliases: [] }] },
+  ] }] };
+  assert.equal(extractFindings(osv).length, 2);
+});
+
+test('extractFindings returns [] for a clean scan and throws on non-object input', () => {
+  assert.deepEqual(extractFindings({}), []);
+  assert.throws(() => extractFindings(null), /expected a JSON object/);
+});
+
+test('summarizeFindings counts merged findings, not raw records, and gates on the threshold', () => {
+  const result = summarizeFindings(extractFindings(OSV_SAMPLE), 'HIGH');
+  assert.equal(result.total, 3);
+  assert.deepEqual(result.counts, { LOW: 0, MEDIUM: 1, HIGH: 1, CRITICAL: 0, UNKNOWN: 1 });
+  assert.equal(result.atOrAboveThreshold, 1);
+});
+
+test('formatFindingsMarkdown emits the required columns with linked ids', () => {
+  const table = formatFindingsMarkdown(extractFindings(OSV_SAMPLE));
+  const lines = table.split('\n');
+  assert.equal(lines[0], '| Severity | Package | Installed | Vulnerability | Fixed in |');
+  assert.equal(lines[2], '| HIGH | requests | 2.19.0 | [GHSA-x84v-xcm2-53pg](https://osv.dev/GHSA-x84v-xcm2-53pg) (CVE-2018-18074) | 2.20.0 |');
+  assert.match(table, /no fix available/);
+});
+
+test('formatFindingsMarkdown caps rows and says how many were cut', () => {
+  const findings = Array.from({ length: 5 }, (_, i) => ({ severity: 'HIGH', package: `p${i}`, version: '1', id: `GHSA-${i}`, cve: null, fixedIn: '2' }));
+  const table = formatFindingsMarkdown(findings, { maxRows: 2 });
+  assert.match(table, /3 more finding\(s\) not shown/);
+});
+
+test('formatFindingsText aligns columns and puts the highest severity first', () => {
+  const lines = formatFindingsText(extractFindings(OSV_SAMPLE)).split('\n');
+  assert.match(lines[0], /^Severity\s+Package\s+Installed\s+Vulnerability\s+Fixed in$/);
+  assert.match(lines[2], /^HIGH\s+requests\s+2\.19\.0\s+GHSA-x84v-xcm2-53pg \(CVE-2018-18074\)\s+2\.20\.0$/);
+  assert.equal(lines[2].indexOf('requests'), lines[3].indexOf('requests'));
+});
+
+test('formatters report a clean scan plainly', () => {
+  assert.equal(formatFindingsMarkdown([]), 'No vulnerabilities found.');
+  assert.equal(formatFindingsText([]), 'No vulnerabilities found.');
 });
 
 if (failures === 0) {

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // scripts/parse-coverage.mjs
 //
-// Parses an lcov (lcov.info) or Istanbul json-summary (coverage-summary.json)
-// coverage report into normalized lines/branches/functions percentages,
+// Parses an lcov (lcov.info), Istanbul json-summary (coverage-summary.json)
+// or Cobertura XML (coverage.xml — what pytest-cov / coverage.py emit for
+// Python) coverage report into normalized lines/branches/functions percentages,
 // compares the "lines" percentage against a threshold, and prints a single
 // JSON line with the result. Used by .github/actions/coverage/action.yml,
 // and unit-tested directly in tests/test_parse-coverage.mjs — composite
@@ -65,9 +66,41 @@ export function parseJsonSummary(json) {
   };
 }
 
-// parseCoverageText(text) -> normalized totals, trying json-summary first
-// (a clean JSON.parse is an unambiguous signal) and falling back to lcov.
+// parseCobertura(text) -> same shape, read from the root <coverage> element's
+// aggregate attributes (lines-valid/lines-covered, branches-valid/branches-covered).
+// Cobertura has no function-level metric, so functions is always 0/0 and
+// reported as N/A downstream — never as 0%. Regex, not an XML parser: this
+// repo has no dependency tree, and only the root element's attributes are read.
+export function parseCobertura(text) {
+  const root = text.match(/<coverage(?=[\s>])[^>]*>/);
+  if (!root) {
+    throw new Error('no <coverage> root element found — this does not look like a Cobertura XML report');
+  }
+  const attr = (name) => {
+    // (?:^|\s) so 'lines-valid' can't match inside a longer attribute name.
+    const m = root[0].match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
+    return m ? Number(m[1]) : null;
+  };
+  const linesValid = attr('lines-valid');
+  const linesCovered = attr('lines-covered');
+  if (linesValid === null || linesCovered === null || Number.isNaN(linesValid) || Number.isNaN(linesCovered)) {
+    throw new Error('the <coverage> element has no lines-valid/lines-covered attributes — this does not look like a Cobertura XML report');
+  }
+  return {
+    lines: { covered: linesCovered, total: linesValid },
+    // Branch attributes are absent/0 unless branch coverage was enabled.
+    branches: { covered: attr('branches-covered') ?? 0, total: attr('branches-valid') ?? 0 },
+    functions: { covered: 0, total: 0 },
+  };
+}
+
+// parseCoverageText(text) -> normalized totals. Cobertura XML is recognized by
+// its leading '<'; otherwise json-summary is tried first (a clean JSON.parse
+// is an unambiguous signal) and lcov is the fallback.
 export function parseCoverageText(text) {
+  if (text.trimStart().startsWith('<')) {
+    return parseCobertura(text);
+  }
   try {
     const json = JSON.parse(text);
     return parseJsonSummary(json);

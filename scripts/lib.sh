@@ -79,3 +79,40 @@ detect_package_manager() {
     die "no lockfile found in '${dir}'. Commit one of package-lock.json, pnpm-lock.yaml, or yarn.lock so installs are reproducible."
   fi
 }
+
+# detect_python_install_source DIR
+# Print "requirements.txt" or "pyproject.toml" — the file pip should install
+# from and that setup-python should key its cache on — or die naming both
+# accepted files if neither is in DIR. requirements.txt wins when both exist:
+# it is the more explicit, reproducible of the two.
+detect_python_install_source() {
+  local dir="$1"
+  if [ -f "${dir}/requirements.txt" ]; then
+    echo "requirements.txt"
+  elif [ -f "${dir}/pyproject.toml" ]; then
+    echo "pyproject.toml"
+  else
+    die "no Python dependency file found in '${dir}'. Commit a requirements.txt or a pyproject.toml so installs are reproducible."
+  fi
+}
+
+# detect_python_scan_files DIR
+# Print, space-separated, every Python dependency file osv-scanner can read
+# that is present in DIR (requirements.txt, poetry.lock, Pipfile.lock), or die
+# naming all three if none is. Unlike detect_python_install_source this does
+# not pick one: a repo with both a lockfile and a requirements.txt should have
+# both scanned, since either can pin a vulnerable version.
+detect_python_scan_files() {
+  local dir="$1"
+  local found=""
+  local candidate
+  for candidate in requirements.txt poetry.lock Pipfile.lock; do
+    if [ -f "${dir}/${candidate}" ]; then
+      found="${found:+${found} }${candidate}"
+    fi
+  done
+  if [ -z "${found}" ]; then
+    die "no Python dependency file found in '${dir}' for the dependency scan. Commit one of requirements.txt, poetry.lock, or Pipfile.lock (pin exact versions with == so they can be scanned)."
+  fi
+  echo "${found}"
+}

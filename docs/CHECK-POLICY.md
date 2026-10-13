@@ -60,6 +60,30 @@ artifact. It's a compliance/traceability output, not a gate — generating it
 after merge, on the code that actually shipped, is more meaningful than
 generating one for every in-flight PR.
 
+## Language specifics (Phase 2: Python)
+
+The table above is language-independent; each composite action dispatches on
+`language` internally, so blocking behavior and trigger scope are identical
+for `js`/`ts` and `python`. What differs is the tool behind each check and
+what it needs from the project:
+
+| Check | Python tool | Needs from the consumer project | Fails (blocking) when |
+|---|---|---|---|
+| Lint | `ruff check` (SARIF) | `ruff` in `requirements.txt` / pyproject extras | any ruff finding; ruff crashing or a bad config is reported as a crash, not a finding |
+| Unit tests | `pytest` | `pytest` installed; at least one collectable test | a test fails or errors; no tests collected; pytest missing |
+| Coverage | `pytest-cov` → Cobertura XML | `pytest-cov` installed; `[tool.coverage.run] source` set so tests themselves aren't counted | lines coverage < `coverage_threshold` (input, default 80); no report produced |
+| Secret scan | Gitleaks | nothing | any finding (unchanged from js/ts) |
+| Dependency scan | `osv-scanner` | exact-pinned `requirements.txt`, `poetry.lock` or `Pipfile.lock` | a finding at/above `severity_threshold` (default HIGH); no dependency file present |
+
+Notes specific to the dependency scan:
+
+- `osv-scanner` reads `requirements.txt` literally and does not resolve
+  version ranges, so a requirements file must pin exact versions, transitive
+  dependencies included (for example from `pip freeze`), to be scanned
+  fully. A lockfile is better.
+- The scan's own findings table (Severity | Package | Installed |
+  Vulnerability | Fixed in, highest first) is the same for every language.
+
 ## General rationale
 
 Deterministic tools block; non-deterministic (LLM) tools comment only.

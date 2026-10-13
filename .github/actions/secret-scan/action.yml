@@ -4,7 +4,8 @@
 #       not the gitleaks-action wrapper, which requires a paid license for
 #       organization use) with --redact, and uploads the SARIF report both
 #       to GitHub code scanning and as a retained build artifact. Scans only
-#       the PR's diff range on pull_request events, and full history on push.
+#       the PR's diff range on pull_request events, and on push the full
+#       history reachable from the pushed commit (not other branches).
 # Languages: none — this check is language-agnostic and takes no `language`
 #       input.
 # Needs: the calling job's checkout step to have fetched enough history —
@@ -70,6 +71,7 @@ runs:
       env:
         EVENT_NAME: ${{ github.event_name }}
         EVENT_PATH: ${{ github.event_path }}
+        HEAD_SHA: ${{ github.sha }}
       run: |
         set -euo pipefail
         # shellcheck disable=SC1091 # only resolvable at runtime, relative to the composite action's own checkout
@@ -83,8 +85,15 @@ runs:
           fi
           echo "log_opts=--log-opts=${base_sha}..${head_sha}" >> "$GITHUB_OUTPUT"
         else
-          # push: full history, no --log-opts restriction.
-          echo "log_opts=" >> "$GITHUB_OUTPUT"
+          # push: the full history of the pushed commit, and ONLY that.
+          # Without --log-opts, `gitleaks git` runs `git log --all`, and the
+          # fetch-depth: 0 checkout has every remote branch, so a secret
+          # committed on some unrelated, unmerged branch would fail the scan
+          # of main. Naming the commit limits the scan to its ancestry.
+          if [ -z "${HEAD_SHA}" ]; then
+            die "github.sha is empty, so the history to scan cannot be determined."
+          fi
+          echo "log_opts=--log-opts=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Run gitleaks
@@ -102,9 +111,9 @@ runs:
         LOG_OPTS: ${{ steps.range.outputs.log_opts }}
       run: |
         set -uo pipefail # no -e: classification is based on whether valid output was produced, not the raw exit code
-        # LOG_OPTS is deliberately unquoted-if-empty: gitleaks rejects an
-        # empty --log-opts="" value, so we must omit the flag entirely for
-        # the push (full-history) case rather than pass an empty one.
+        # LOG_OPTS is deliberately unquoted: it is a single --log-opts=<range>
+        # token from the range step (a SHA range, no spaces), and an empty
+        # value must omit the flag entirely (gitleaks rejects --log-opts="").
         # --redact: without it, gitleaks writes the actual matched secret
         # value into the SARIF report. That report is now uploaded both to
         # GitHub code scanning and as a retained build artifact (see below),
