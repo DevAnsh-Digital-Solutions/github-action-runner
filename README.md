@@ -523,36 +523,6 @@ Merging to `main` and creating or moving `v1` need human approval.
 
 ---
 
-## Repository layout
-
-```
-.github/
-  workflows/
-    central-ci.yml        the reusable workflow consumers call (only entry point)
-    self-check.yml        CI for this repo: actionlint + shellcheck
-  actions/
-    setup/                Node.js or Python + project dependencies
-    lint/                 ESLint / ruff -> SARIF
-    unit-test/            Jest / Vitest / pytest, uploads coverage-report
-    coverage/             parses coverage-report, gates on threshold
-    dependency-scan/      osv-scanner -> SARIF + findings table
-    secret-scan/          gitleaks -> SARIF (language-agnostic)
-scripts/
-  lib.sh                  die / require_cmd / summary / file detection helpers
-  parse-coverage.mjs      lcov, Istanbul json-summary, Cobertura XML -> pass/fail
-  parse-osv-results.mjs   osv-scanner JSON -> counts, merged findings, tables
-  summarize-sarif.mjs     SARIF -> summary table, annotations, repo-relative paths
-  summarize-junit.mjs     pytest JUnit XML -> summary table, annotations
-tests/                    unit tests for every script above
-docs/
-  CHECK-POLICY.md         when each check runs and whether it blocks
-  consumers/              copy-paste ci.yml variants per language
-CHANGELOG.md              release notes per version
-CLAUDE.md                 engineering rules for this repo
-```
-
----
-
 ## Working on this repo
 
 Read [CLAUDE.md](CLAUDE.md) first. In short: one composite action per check,
