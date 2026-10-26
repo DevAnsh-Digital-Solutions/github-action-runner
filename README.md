@@ -23,6 +23,7 @@ whether it blocks, is in [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md).
 - [Quick start](#quick-start)
 - [Inputs](#inputs)
 - [The checks](#the-checks)
+- [AI review (advisory)](#ai-review-advisory)
 - [What your project must provide](#what-your-project-must-provide)
 - [Branch and trigger policy](#branch-and-trigger-policy)
 - [Reading the results](#reading-the-results)
@@ -46,6 +47,7 @@ whether it blocks, is in [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md).
 
 | Ref | What it is |
 |---|---|
+| `v1.1.0-rc.3` | **Next pre-release (not tagged until validated).** Adds the advisory [AI review](#ai-review-advisory). The `Feature/LLM-Review` branch pins its internal refs to it. |
 | `v1.1.0-rc.2` | **Current pre-release.** JS/TS + Python. Use this to test Python. |
 | `v1.1.0-rc.1` | Superseded: its secret scan failed pushes to `main` when *another* branch held a secret. Do not use. |
 | `main` | Phase 1 (JS/TS only). |
@@ -198,9 +200,21 @@ All inputs go under `with:` in the consumer's `ci.yml`.
 | `enable_secret_scan` | boolean | `true` | Run the secret scan. Language-agnostic. |
 | `coverage_threshold` | number | `80` | Minimum **line** coverage, in percent. |
 | `python_version` | string | `3.12` | Python installed when `language: python`. Ignored otherwise. |
+| `enable_llm_review` | boolean | **`false`** | Advisory [AI review](#ai-review-advisory) of the PR. Needs the `ai_token` secret and `llm_model`. Pull requests only. |
+| `llm_provider` | string | `openai-compatible` | `openai-compatible`, `anthropic` or `gemini`. See [AI review](#ai-review-advisory). |
+| `llm_base_url` | string | provider's standard URL | Set for OpenAI-compatible providers other than OpenAI. |
+| `llm_model` | string | *required if the review is on* | Model name exactly as the provider expects it. No default is guessed. |
+| `llm_max_output_tokens` | number | `4096` | Sent only to Anthropic, which requires a limit. |
+| `llm_timeout_seconds` | number | `120` | Per-request timeout. |
+| `llm_max_diff_kb` | number | `200` | Largest PR diff sent to the model. Bigger diffs are cut, and the comment says so. |
+| `llm_max_findings` | number | `20` | Most review points in the comment. |
+| `llm_exclude_paths` | string | lockfiles, `*.min.js`, `*.map`, `dist/**`, `build/**`, `coverage/**` | Comma-separated globs kept out of the diff sent to the model. |
 
-Every flag defaults to `true`, so **set the ones you don't want to `false`
-explicitly**. Enabling exactly one check runs exactly that check (plus
+Secret: `ai_token` (optional; required only when `enable_llm_review` is
+`true`). See [AI review](#ai-review-advisory).
+
+Every check flag except `enable_llm_review` defaults to `true`, so **set the
+ones you don't want to `false` explicitly**. Enabling exactly one check runs exactly that check (plus
 `validate-inputs`). The one dependency is that coverage needs unit tests.
 
 The composite actions have a few more inputs that `central-ci.yml` does not
@@ -253,6 +267,125 @@ Details worth knowing:
   (`base..head`). On `push` it scans the full history *reachable from the
   pushed commit*, not other branches. Matched values are always redacted
   in logs, the summary and the SARIF.
+
+---
+
+## AI review (advisory)
+
+An optional check that has an LLM review the pull request and **explain the
+results of lint, unit tests and coverage**. It comments; it never blocks
+(see [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md)). It is off by default
+because it costs money and sends the PR diff to an LLM provider.
+
+```mermaid
+flowchart LR
+    pre["llm-preflight<br/>AI_TOKEN present?<br/>provider accepts it?"] -->|ready| rev
+    lint["lint"] --> rev
+    ut["unit-test"] --> rev
+    cov["coverage"] --> rev
+    rev["llm-review<br/>lint + test + coverage outputs<br/>+ PR diff -> LLM -> PR comment"]
+```
+
+**Setup.**
+
+1. Add a repository (or organization) secret named **`AI_TOKEN`** with your
+   provider's API key: Settings → Secrets and variables → Actions.
+2. Turn the review on, name the model, and map the secret. Branch scoping is
+   one expression in your own `ci.yml`:
+
+```yaml
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1.1.0-rc.3
+    with:
+      language: ts
+      # every PR:
+      enable_llm_review: true
+      # only PRs into one branch:
+      # enable_llm_review: ${{ github.base_ref == 'develop' }}
+      # several branches:
+      # enable_llm_review: ${{ contains(fromJSON('["main","develop"]'), github.base_ref) }}
+      # release branches:
+      # enable_llm_review: ${{ startsWith(github.base_ref, 'release/') }}
+      llm_provider: openai-compatible
+      llm_model: gpt-4o
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}     # or: secrets: inherit
+    permissions:
+      contents: read
+      pull-requests: write                  # lets the review post its comment
+      security-events: write
+      actions: read
+```
+
+Add `pull-requests: write` to the caller's top-level `permissions:` as well
+if you set them there. The central jobs never get more than that.
+
+**Providers.** Three wire formats cover essentially every model:
+
+| `llm_provider` | Use for | `llm_base_url` | Example `llm_model` |
+|---|---|---|---|
+| `openai-compatible` (default) | OpenAI, Gemini (OpenAI endpoint), Groq, OpenRouter, Mistral, DeepSeek, Together, Ollama, vLLM, LiteLLM, most gateways | OpenAI's by default. Gemini: `https://generativelanguage.googleapis.com/v1beta/openai` | `gpt-4o`, `gemini-2.5-flash` |
+| `anthropic` | Claude models | `https://api.anthropic.com` by default | a Claude model name |
+| `gemini` | Google's native Gemini API | `https://generativelanguage.googleapis.com` by default | `gemini-2.5-flash` |
+
+The token is always the same `AI_TOKEN` secret; the action sends it the way
+the provider expects. Requests are minimal (model + messages only, no
+temperature or response-format parameters), because newer models reject
+parameters they don't support. The model is asked for JSON in the prompt and
+the reply is validated, with one retry.
+
+**Token check before anything starts.** The `AI Review (token check)` job runs
+at the very start, in parallel with the other checks. It fails within seconds,
+with a message saying what to fix, if:
+
+- `AI_TOKEN` is empty (also happens on PRs from forks and Dependabot PRs,
+  which don't receive repository secrets);
+- the provider rejects the key (it asks the free model-list endpoint, so no
+  tokens are spent);
+- `llm_model`, `llm_provider` or `llm_base_url` is invalid.
+
+The review job runs only when that check passed. On a non-PR event
+(a push) the review is skipped with an explicit notice.
+
+**What it reviews.** After lint, unit-test and coverage finish (pass *or*
+fail), it sends the model: the lint findings (SARIF), the failing tests, the
+coverage figure against `coverage_threshold` plus the least-covered files this
+PR touched, and the PR diff (minus `llm_exclude_paths`, capped by
+`llm_max_diff_kb`). If a job left no output it says "no output available"
+rather than guessing.
+
+**What you get.** One comment on the PR, updated in place on every push (so the
+history isn't spammed), also shown in the job summary:
+
+```text
+🤖 AI review
+Verdict: ❌ Needs changes — 1 high · 2 medium
+| Check | Result | Details |
+| Lint | ❌ | 3 finding(s): 1 error, 2 warning |
+| Unit tests | ✅ | 42 passed, 0 failed, 1 skipped (43 total) |
+| Coverage | ❌ | 76.4% lines vs 80% required |
+
+### 1. Lint
+- [ ] 🟠 Medium · src/api.ts:12 — Unused variable `token`
+    Why it matters …
+    💡 Fix: remove it or use it in the request.
+### 2. Unit tests   …
+### 3. Coverage     …
+### 4. Code review  …
+```
+
+The check table is computed from the real outputs, not written by the model.
+Every point is a checkbox so reviewers can tick items off. A new push
+regenerates the comment, which resets the ticks.
+
+**Safety.** The PR diff is treated as untrusted data: it is fenced inside a
+random boundary, the model is told never to follow instructions found in it,
+its reply must match a fixed JSON shape, and before posting the text is
+HTML-escaped, `@mentions` are defused, link and image targets are dropped, and
+file references are checked against the real diff. The jobs get
+`pull-requests: write` at most, never `contents: write`, and both are
+`continue-on-error`, so a provider outage can never fail your run.
 
 ---
 
@@ -312,7 +445,8 @@ checks. The org default comes from [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md):
 | Lint, unit tests, coverage | every PR, all target branches | yes |
 | Secret scan | every PR + push to `main` | yes |
 | Dependency scan | every PR + nightly on `main` | on HIGH / CRITICAL |
-| SAST, IaC scan, LLM review, SBOM | *later phases* | see CHECK-POLICY |
+| LLM PR review | opt-in per repo/branch (`enable_llm_review`, PRs only) | **never** (advisory) |
+| SAST, IaC scan, SBOM | *later phases* | see CHECK-POLICY |
 
 There are two ways to express a policy in `ci.yml`.
 
@@ -456,7 +590,10 @@ expected. The summary, annotations and artifacts don't depend on it.
 - Inputs and event data reach shell scripts only through `env:`, never
   through `${{ }}` inside a script body. `pull_request_target` is never used.
 - Secret-scan output is always `--redact`ed.
-- No secrets are needed beyond the default `GITHUB_TOKEN`.
+- No secrets are needed beyond the default `GITHUB_TOKEN`, except `ai_token`
+  when the optional AI review is on. It is passed to the action as a masked
+  input, sent only in an HTTP header to the provider URL you configure
+  (which must be `https://`), and scrubbed from every error message.
 
 ---
 
@@ -519,6 +656,11 @@ Merging to `main` and creating or moving `v1` need human approval.
 | Dependency scan finds nothing though a package is vulnerable | `requirements.txt` has ranges or misses transitive deps | Pin exactly with `pip freeze`, or use a lockfile |
 | *Upload SARIF* warns about Advanced Security | Private repo without Code Security | Expected; use the summary and artifacts |
 | `git push` rejected: *repository rule violations* when committing a test secret | GitHub push protection blocks secret-shaped values | Use a private test repo, or allow it via the link in the push error if it's genuinely fake |
+| `AI Review (token check)` fails: *AI_TOKEN is not set* | Secret missing, not mapped (`ai_token:` or `secrets: inherit`), or the PR is from a fork or Dependabot | Add the secret and map it. Fork PRs cannot be reviewed |
+| `AI_TOKEN was rejected by provider …` | Wrong key for that provider, or wrong `llm_provider` / `llm_base_url` | Check the key and the provider settings |
+| `llm_model is empty` | `enable_llm_review: true` without `llm_model` | Set `llm_model` |
+| AI review ran but no PR comment | Caller job lacks `pull-requests: write`, or a fork PR | Grant it. The review is still in the job summary |
+| AI review says *no output available* for a check | That job crashed before uploading its report | Read that job's log |
 | Secret scan on push to `main` reports a commit that isn't on `main` | You're on `v1.1.0-rc.1` | Move to `v1.1.0-rc.2` or later |
 
 ---
@@ -566,6 +708,7 @@ failing path for every check. See the definition of done in
 |---|---|---|
 | 1 | JS/TS: lint, unit test, coverage, dependency scan, secret scan | Done (`main`) |
 | 2 | Python: same five checks | Pre-release `v1.1.0-rc.2`, under validation |
+| 2+ | Advisory AI review (`enable_llm_review`) | On `Feature/LLM-Review`; pre-release `v1.1.0-rc.3` pending validation |
 | 3 | Flutter | Not started |
 | 4 | Unity | Not started |
 | later | SAST, IaC scan, LLM PR review (advisory only), SBOM | Not started; policy already defined in [CHECK-POLICY.md](docs/CHECK-POLICY.md) |

@@ -6,6 +6,35 @@ tag `v1` points at the latest `v1.x.y` (see
 
 ---
 
+## Unreleased — advisory AI review (branch `Feature/LLM-Review`, pre-release `v1.1.0-rc.3`)
+
+Not yet tagged; becomes part of the next release once validated.
+
+- **New check: AI review** (`enable_llm_review`, default `false`). A new
+  composite action `.github/actions/llm-review/` and two jobs in
+  `central-ci.yml`: `llm-preflight` (verifies the `ai_token` secret and the
+  provider settings before anything is sent) and `llm-review` (reviews the PR
+  diff plus the lint, unit-test and coverage outputs and posts one marked,
+  checkbox-style PR comment that is updated on each push). Advisory: both jobs
+  are `continue-on-error`, and the review job has `pull-requests: write` only.
+- **Any model.** `llm_provider` (`openai-compatible`, `anthropic`, `gemini`),
+  `llm_base_url`, `llm_model`. Groq, OpenRouter, Ollama, Gemini's OpenAI
+  endpoint etc. work through `openai-compatible`. Unit-tested against a fake
+  `fetch` and a local mock server; live validation against OpenAI and Gemini
+  on the consumer repos is still pending.
+- New inputs: `enable_llm_review`, `llm_provider`, `llm_base_url`,
+  `llm_model`, `llm_max_output_tokens`, `llm_timeout_seconds`,
+  `llm_max_diff_kb`, `llm_max_findings`, `llm_exclude_paths`. New optional
+  secret: `ai_token`.
+- New scripts `scripts/llm-client.mjs` and `scripts/llm-review.mjs` with unit
+  tests `tests/test_llm-client.mjs` and `tests/test_llm-review.mjs`.
+- `unit-test` now also uploads the raw runner report as the
+  `unit-test-results` artifact (additive; used by the AI review).
+- `docs/CHECK-POLICY.md`: the LLM review row now reads "branches a consumer
+  opts in (recommended: `main`)" instead of "`main` only".
+
+---
+
 ## v1.0.0 — DRAFT, not yet tagged
 
 > **Status:** release candidate `v1.1.0-rc.2`. Becomes `v1.0.0` once the
