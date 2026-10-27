@@ -170,6 +170,13 @@ Secret-scan specifics:
 
 - From `@main` or `@v1.1.0-rc.*`: change the ref to `@v1` (automatic
   `v1.x.y` fixes) or `@v1.0.0` (fixed). No input changes are needed.
+- **Required:** add `pull-requests: write` to your `ci.yml`'s `permissions:`
+  (next to `contents: read`, `security-events: write`, `actions: read`), even
+  if you don't use the AI review. GitHub checks every nested job's
+  permissions before the run starts, including jobs whose check is turned
+  off, so without it the run fails at once with *"nested job 'llm-review' is
+  requesting 'pull-requests: write', but is only allowed 'pull-requests:
+  none'"*. Found on python-private after release.
 - Private consumers need this repo's Settings → Actions → General → Access
   set to "Accessible from repositories in the organization".
 

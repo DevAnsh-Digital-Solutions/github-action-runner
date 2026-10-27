@@ -28,10 +28,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
-  security-events: write # SARIF upload from lint
+  security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   lint:
@@ -60,10 +61,11 @@ on:
   schedule:
     - cron: '0 3 * * *' # nightly dependency scan, per docs/CHECK-POLICY.md
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   pr-checks:
@@ -116,10 +118,11 @@ on:
   schedule:
     - cron: '0 3 * * *' # nightly dependency scan, per docs/CHECK-POLICY.md
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   pr-checks:

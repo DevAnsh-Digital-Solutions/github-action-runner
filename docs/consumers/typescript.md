@@ -28,6 +28,12 @@ name: CI
 on:
   pull_request:
 
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
 jobs:
   lint:
     uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
@@ -54,6 +60,12 @@ on:
     branches: [main]
   schedule:
     - cron: '0 3 * * *' # nightly dependency scan, per docs/CHECK-POLICY.md
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
 
 jobs:
   pr-checks:
@@ -105,6 +117,12 @@ on:
     branches: [main]
   schedule:
     - cron: '0 3 * * *' # nightly dependency scan, per docs/CHECK-POLICY.md
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
 
 jobs:
   pr-checks:
@@ -169,6 +187,12 @@ only runs on pull requests; the expression on `enable_llm_review` chooses
 which target branches.
 
 ```yaml
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
 jobs:
   pr-checks:
     if: github.event_name == 'pull_request'

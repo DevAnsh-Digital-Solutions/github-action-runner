@@ -72,7 +72,8 @@ committed lockfile and a test runner. The short list is in
 **Step 3 — Add the CI file.** Create `.github/workflows/ci.yml` in your repo
 and paste one of the [scenarios below](#3-pick-your-scenario-copy-paste).
 [Scenario 1](#scenario-1-all-checks-on-every-pr-recommended-start) is the
-usual starting point.
+usual starting point. Keep its `permissions:` block exactly as it is — all
+four lines are required, or nothing runs.
 
 **Step 4 — Open a pull request.** The checks appear at the bottom of the PR as
 `CI / ci / Lint`, `CI / ci / Unit Test`, and so on. Click **Details** on any of
@@ -113,10 +114,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   ci:
@@ -134,10 +136,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   ci:
@@ -159,8 +162,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
 
 jobs:
   ci:
@@ -187,10 +193,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   ci:
@@ -214,11 +221,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
-  pull-requests: write        # lets the AI review post its comment
+  pull-requests: write
 
 jobs:
   ci:
@@ -243,7 +250,7 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
@@ -282,10 +289,11 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
   api:
@@ -308,7 +316,7 @@ name: CI
 on:
   pull_request:
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
@@ -355,7 +363,7 @@ on:
   schedule:
     - cron: '0 3 * * *'   # every night at 03:00 UTC (runs on the default branch)
 
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
@@ -397,6 +405,35 @@ jobs:
       enable_secret_scan: false
 ```
 
+#### Why a nightly run?
+
+The `schedule:` trigger runs the **dependency scan** once a day, even when
+nobody pushes any code.
+
+- **The problem it solves:** security holes are found in popular packages
+  every day. A package that was safe when you merged it last month can be
+  listed as dangerous today. Your PR checks only run when code changes, so
+  without a nightly run nobody would notice until the next PR.
+- **Why daily:** new advisories are published continuously, and a daily scan
+  means you hear about one within 24 hours. The scan takes about a minute, so
+  it costs very little.
+- **What it does:** it scans the lockfile on your **default branch** (usually
+  `main`) and fails if it finds a HIGH or CRITICAL issue. Watch the *Actions*
+  tab, or turn on GitHub's failed-workflow email notifications, so a red
+  nightly run gets seen.
+- **Changing the time:** `cron: '0 3 * * *'` means 03:00 **UTC** every day.
+  For example, `'30 1 * * 1-5'` is 01:30 UTC on weekdays only. Runs can start
+  a few minutes late when GitHub is busy.
+- **Only the dependency scan runs at night.** Lint, tests and coverage can't
+  change unless code changes, so they don't need a nightly run, and the AI
+  review never runs on a schedule.
+- **Good to know:** GitHub only runs schedules from the default branch, and
+  pauses them in public repos after 60 days without activity.
+
+The same reasoning is why the secret scan runs again on **push to `main`**:
+it catches a secret that reached `main` without a PR, for example a direct
+push by an admin.
+
 More language-specific examples: [docs/consumers/typescript.md](docs/consumers/typescript.md),
 [docs/consumers/python.md](docs/consumers/python.md).
 
@@ -407,12 +444,12 @@ More language-specific examples: [docs/consumers/typescript.md](docs/consumers/t
 | Rule | What happens if you break it |
 |---|---|
 | **Coverage needs unit tests.** Coverage reads the test run's report; it never runs tests itself. | The run stops at once with *"enable_coverage requires enable_unit_test"*. |
-| **AI review needs** `AI_TOKEN`, `llm_model`, and `pull-requests: write`. | The *AI Review (token check)* job fails with a message naming what's missing. Your other checks are not affected. |
+| **Your `ci.yml` must always grant all four permissions** (`contents: read`, `security-events: write`, `actions: read`, `pull-requests: write`) — even if you only use one check. GitHub checks every job's permissions *before* anything runs, including jobs for checks you turned off. Each job still only gets what it needs. | **Nothing runs.** The run fails at once with *"Invalid workflow file … is requesting 'pull-requests: write', but is only allowed 'pull-requests: none'"* (or the same for `security-events`). |
+| **AI review needs** `AI_TOKEN` and `llm_model`. | The *AI Review (token check)* job fails with a message naming what's missing. Your other checks are not affected. |
 | **AI review only runs on pull requests.** | On a push it is skipped with a notice. |
 | **AI review reads lint, tests and coverage.** It does not read the dependency or secret scan. | If those three are off, it reviews only the code changes. |
 | **Every check except the AI review is on by default.** | Leaving a flag out means *on*. Write `false` to turn a check off. |
 | **One check alone is fine.** Turning on just one check runs just that check. | — |
-| **Lint, dependency scan and secret scan need** `security-events: write` and `actions: read`. | They fail to upload their results. Copy the `permissions:` block from the scenarios. |
 
 ---
 
@@ -457,7 +494,8 @@ Copy the two (or three) lines for your provider into `with:`:
       ai_token: ${{ secrets.AI_TOKEN }}   # or replace the whole block with: secrets: inherit
 ```
 
-And add `pull-requests: write` under `permissions:` (see Scenario 5).
+Your `permissions:` block must include `pull-requests: write` (every scenario
+above already has it).
 
 ### What happens on a PR
 
@@ -639,7 +677,8 @@ coverage files are auto-detected; Node.js 20; Python dev extra `dev`.
 | AI Review: HTTP 404 | Wrong `llm_model`, or an `llm_base_url` that doesn't match `llm_provider` | Fix the model name; remove `llm_base_url` for `gemini` / `anthropic` / OpenAI |
 | AI Review: HTTP 429 / quota | Rate limit or no credit left | Wait and re-run, or add billing credit |
 | `llm_model is empty` | AI review on without a model | Add `llm_model` |
-| AI review ran, but no comment | Missing `pull-requests: write`, or a fork PR | Add the permission; the review is still on the Summary page |
+| *"Invalid workflow file … nested job '…' is requesting 'pull-requests: write' (or 'security-events: write'), but is only allowed '…: none'"* and **no jobs run** | Your `ci.yml`'s `permissions:` block is missing one of the four required lines. GitHub checks this even for checks you turned off | Copy the `permissions:` block from any [scenario](#3-pick-your-scenario-copy-paste) (all four lines) |
+| AI review ran, but no comment | PR from a fork (its token is read-only) | Expected; the review is still on the Summary page |
 | AI review says *"no output available"* for a check | That check crashed before saving its report | Open that check's log |
 | "I pushed but the AI comment didn't change" | It **edits** the same comment | Scroll up to the comment; it shows "edited" and the new commit at the bottom |
 
@@ -761,8 +800,10 @@ jobs:
 
 - Your `ci.yml`'s `permissions:` is the **maximum** the checks can use; each
   job asks for less. Lint and the scans need `security-events: write` and
-  `actions: read`; the AI review needs `pull-requests: write`. Nothing ever
-  gets `contents: write`.
+  `actions: read`; the AI review needs `pull-requests: write`. GitHub checks
+  every job against this maximum before the run starts, *even jobs whose check
+  is turned off*, which is why all four lines are always required. Nothing
+  ever gets `contents: write`.
 - Every third-party action is pinned to an exact commit. Downloaded tools
   (osv-scanner, gitleaks) are checked against a known SHA-256 before running.
 - Settings and PR data reach scripts only through environment variables,
