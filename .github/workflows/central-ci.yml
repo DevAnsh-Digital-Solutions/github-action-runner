@@ -34,7 +34,7 @@
 # (`@v1.0.0`), so a consumer calling `@v1` or `@v1.0.0` runs exactly the
 # actions released with this workflow. Every release or pre-release must bump
 # them to its own tag in the commit that gets tagged (see README →
-# Versioning and releases).
+# Under the hood → Versions).
 name: Central CI
 
 on:

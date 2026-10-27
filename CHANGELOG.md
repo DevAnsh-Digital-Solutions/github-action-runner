@@ -2,7 +2,7 @@
 
 All notable changes to this repo. Versions follow `vX.Y.Z`; the moving major
 tag `v1` points at the latest `v1.x.y` (see
-[README → Versioning and releases](README.md#versioning-and-releases)).
+[README → Versions](README.md#versions)).
 
 ---
 
@@ -162,7 +162,9 @@ Secret-scan specifics:
   GitHub refuses with "workflow was not found" before any job starts.
 - AI review: a wrong `llm_base_url` / `llm_model` passes the token check and
   only fails in the review job; the review does not read dependency-scan or
-  secret-scan results; PRs from forks and Dependabot get no review (no
+  secret-scan results, so its verdict can say "Looks good" on a PR those
+  scans block; line numbers it cites can be off by a few lines (it reads the
+  diff, not whole files); PRs from forks and Dependabot get no review (no
   secrets).
 - Not included yet (later phases): SAST, IaC scan, SBOM, Flutter, Unity.
 
@@ -170,6 +172,13 @@ Secret-scan specifics:
 
 - From `@main` or `@v1.1.0-rc.*`: change the ref to `@v1` (automatic
   `v1.x.y` fixes) or `@v1.0.0` (fixed). No input changes are needed.
+- **Required:** add `pull-requests: write` to your `ci.yml`'s `permissions:`
+  (next to `contents: read`, `security-events: write`, `actions: read`), even
+  if you don't use the AI review. GitHub checks every nested job's
+  permissions before the run starts, including jobs whose check is turned
+  off, so without it the run fails at once with *"nested job 'llm-review' is
+  requesting 'pull-requests: write', but is only allowed 'pull-requests:
+  none'"*. Found on python-private after release.
 - Private consumers need this repo's Settings → Actions → General → Access
   set to "Accessible from repositories in the organization".
 
@@ -183,8 +192,22 @@ Secret-scan specifics:
       against the code (lint, tests, coverage facts all correct)
 - [x] ts-private: a rejected `AI_TOKEN` is caught by the token check
 - [x] Release approved; merged to `main`
+- [x] python-private on `@v1` (2026-10-27, PRs #9–#14 into `main`):
+      #9 all green; #10 fails only Lint; #11 fails only Unit Test (Coverage
+      skipped, as designed); #12 fails only Coverage; #13 fails only
+      Dependency Scan; #14 fails only Secret Scan
+- [x] AI review with OpenAI (`gpt-4o`), scoped to PRs into `main`: ran and
+      commented on #9–#14; the results table matched every run
+- [x] Nightly-scan rationale confirmed for real: `certifi==2026.7.22` passed
+      in early October and was flagged CRITICAL (GHSA-6q48-6c7w-9gw2) on
+      2026-10-20; fixed in python-private by bumping to 2026.10.23
 - [ ] python-private: push to `main`, all five green (confirms the secret-scan fix)
-- [ ] python-private: failing PRs for each check fail only their own check
 - [ ] python-private: manual run with a single check runs only that check
-- [ ] AI review: one-branch scoping, missing `AI_TOKEN`, an all-green PR, OpenAI
+- [ ] AI review: skipped on a PR into a branch that isn't opted in (`dev`);
+      missing `AI_TOKEN`
 - [ ] ~~python-public~~: not possible while this repo is private (see Known limitations)
+
+Observed AI review quality (advisory, not blocking): on #11 it named the
+right failing test and cause but linked line 12 instead of 10; on #14 it said
+"Looks good" although the PR adds a fake AWS key, because the review does not
+see secret-scan or dependency-scan results (see Known limitations).

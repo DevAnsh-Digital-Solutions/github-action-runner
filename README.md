@@ -1,146 +1,357 @@
 # github-action-runner
 
-Central CI for every repository in the **DevAnsh-Digital-Solutions** org.
+Shared CI for every repository in the **DevAnsh-Digital-Solutions** org.
 
-A consumer repo adds one small `ci.yml` that calls this repo's reusable
-workflow, turns on the checks it wants with boolean flags, and gets lint,
-unit tests, coverage gating, dependency scanning and secret scanning with
-consistent behaviour, summaries and SARIF output across the org. The checks
-themselves live here, so they are written, reviewed, pinned and upgraded in
-one place.
+You add **one small file** (`.github/workflows/ci.yml`) to your repo, switch on
+the checks you want, and get:
 
-This repo holds **no application code**: only CI definitions, the helper
-scripts they call, and tests for those scripts. Engineering rules for
-changing it are in [CLAUDE.md](CLAUDE.md); which check runs when, and
-whether it blocks, is in [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md).
+| Check | What it does | Blocks the merge when… |
+|---|---|---|
+| **Lint** | Checks code style and common mistakes (ESLint / ruff) | it finds an error |
+| **Unit tests** | Runs your tests (Jest, Vitest or pytest) | a test fails |
+| **Coverage** | Measures how much code your tests run | it is below your threshold (default 80%) |
+| **Dependency scan** | Looks for known security holes in your packages | a HIGH or CRITICAL one is found |
+| **Secret scan** | Looks for passwords and keys committed by mistake | anything is found |
+| **AI review** (optional) | An AI model explains the results above and reviews the code in a PR comment | **never** — it only comments |
+
+All the check logic lives here, so every repo gets the same behaviour, and fixes
+reach everyone at once.
+
+**Current version: `v1`** (= `v1.0.0`). Use `@v1` in your `ci.yml`.
 
 ---
 
 ## Contents
 
-- [Status and versions](#status-and-versions)
-- [How it works](#how-it-works)
-- [Quick start](#quick-start)
-- [Inputs](#inputs)
-- [The checks](#the-checks)
-- [AI review (advisory)](#ai-review-advisory)
-- [What your project must provide](#what-your-project-must-provide)
-- [Branch and trigger policy](#branch-and-trigger-policy)
-- [Reading the results](#reading-the-results)
-- [Permissions and security](#permissions-and-security)
-- [Versioning and releases](#versioning-and-releases)
-- [Troubleshooting](#troubleshooting)
-- [Repository layout](#repository-layout)
-- [Working on this repo](#working-on-this-repo)
-- [Roadmap](#roadmap)
+1. [Will it work for my repo?](#1-will-it-work-for-my-repo)
+2. [First-time setup (5 steps)](#2-first-time-setup-5-steps)
+3. [Pick your scenario (copy-paste)](#3-pick-your-scenario-copy-paste)
+4. [Rules for combining checks](#4-rules-for-combining-checks)
+5. [Setting up the AI review](#5-setting-up-the-ai-review)
+6. [What your project must contain](#6-what-your-project-must-contain)
+7. [Reading the results](#7-reading-the-results)
+8. [All settings](#8-all-settings)
+9. [Troubleshooting](#9-troubleshooting)
+10. [Under the hood](#10-under-the-hood) (how it works, security, versions, contributing)
 
 ---
 
-## Status and versions
+## 1. Will it work for my repo?
 
-| Language | Status | Available at |
+Check this first. If any row says **No**, the CI will not run for you.
+
+| Your repo is… | Works? | Why / what to do |
 |---|---|---|
-| `js` / `ts` | Implemented (Phase 1) | `@main`, `@v1.1.0-rc.2` |
-| `python` | Implemented (Phase 2), **pre-release, under validation** | `@v1.1.0-rc.2` only |
-| `flutter` | Not started. Accepted as a value, every check hard-fails with "not yet implemented" | n/a |
-| `unity` | Not started. Same as flutter | n/a |
+| A **private** or **internal** repo in the DevAnsh-Digital-Solutions org | ✅ Yes | — |
+| A **public** repo | ❌ **No** | This runner repo is private, and GitHub never lets a public repo use workflows from a private one. You get *"workflow was not found"* and **no job runs**. Make your repo private, or ask an org admin to make this runner repo public. |
+| A repo **outside the org** (personal account, another org, a fork in your account) | ❌ **No** | Only repos inside this org are allowed. |
+| Written in **JavaScript / TypeScript** | ✅ Yes | `language: js` or `ts` |
+| Written in **Python** | ✅ Yes | `language: python` |
+| Written in **Flutter / Unity** | ❌ Not yet | Accepted as a value, but every check stops with "not yet implemented". |
+| Using **self-hosted Windows / macOS / ARM** runners | ❌ No | The tools are Linux x64 only. Use the default `ubuntu-latest`. |
+| A **monorepo** (project in a subfolder) | ✅ Yes | Set `working_dir` (see [Scenario 7](#scenario-7-project-in-a-subfolder-monorepo)). |
 
-| Ref | What it is |
+Two smaller limits, only for the **AI review**:
+
+- It does **not** run on PRs opened **from forks** or by **Dependabot**: GitHub does not give those PRs your secrets.
+- It only runs on **pull requests**, not on plain pushes.
+
+---
+
+## 2. First-time setup (5 steps)
+
+**Step 1 — Check access (one time, org admin).** In *this* runner repo:
+Settings → Actions → General → **Access** → choose
+*"Accessible from repositories in the DevAnsh-Digital-Solutions organization"*.
+This is already done for the org; you only need it again if someone changes it.
+
+**Step 2 — Make sure your project has what the checks need.** For example, a
+committed lockfile and a test runner. The short list is in
+[section 6](#6-what-your-project-must-contain).
+
+**Step 3 — Add the CI file.** Create `.github/workflows/ci.yml` in your repo
+and paste one of the [scenarios below](#3-pick-your-scenario-copy-paste).
+[Scenario 1](#scenario-1-all-checks-on-every-pr-recommended-start) is the
+usual starting point. Keep its `permissions:` block exactly as it is — all
+four lines are required, or nothing runs.
+
+**Step 4 — Open a pull request.** The checks appear at the bottom of the PR as
+`CI / ci / Lint`, `CI / ci / Unit Test`, and so on. Click **Details** on any of
+them, then **Summary**, to see tables of what was found.
+
+**Step 5 (recommended) — Make the checks required.** Settings → Branches →
+add a rule for `main` → *Require status checks to pass* → tick the `CI / …`
+checks you want to block merges. Don't tick the AI review checks: they are
+advice only.
+
+---
+
+## 3. Pick your scenario (copy-paste)
+
+Every scenario is a complete `ci.yml`. Change `language:` to `js`, `ts` or
+`python`.
+
+| # | Scenario | Lint | Tests | Coverage | Dep. scan | Secret scan | AI review |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| 1 | [All checks on every PR](#scenario-1-all-checks-on-every-pr-recommended-start) | ✅ | ✅ | ✅ | ✅ | ✅ | – |
+| 2 | [Lint only](#scenario-2-lint-only) | ✅ | – | – | – | – | – |
+| 3 | [Tests and coverage only](#scenario-3-tests-and-coverage-only) | – | ✅ | ✅ | – | – | – |
+| 4 | [Security only](#scenario-4-security-only) | – | – | – | ✅ | ✅ | – |
+| 5 | [All checks + AI review on every PR](#scenario-5-all-checks--ai-review-on-every-pr) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 6 | [AI review only on PRs into `main`](#scenario-6-ai-review-only-on-prs-into-main) | ✅ | ✅ | ✅ | ✅ | ✅ | `main` only |
+| 7 | [Project in a subfolder (monorepo)](#scenario-7-project-in-a-subfolder-monorepo) | ✅ | ✅ | ✅ | ✅ | ✅ | – |
+| 8 | [Different checks per branch](#scenario-8-different-checks-per-branch) | ✅ | `main` | `main` | `main` | ✅ | `main` |
+| 9 | [Org-recommended full setup (PR + push + nightly)](#scenario-9-org-recommended-full-setup) | ✅ | ✅ | ✅ | ✅ + nightly | ✅ + push to `main` | `main` |
+
+> **Good to know:** every check is **on by default** except the AI review.
+> So write `false` for the checks you *don't* want.
+
+### Scenario 1: all checks on every PR (recommended start)
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts            # js | ts | python
+      coverage_threshold: 80  # minimum % of lines your tests must run
+```
+
+### Scenario 2: lint only
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      enable_lint: true
+      enable_unit_test: false
+      enable_coverage: false
+      enable_dependency_scan: false
+      enable_secret_scan: false
+```
+
+### Scenario 3: tests and coverage only
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: python
+      enable_lint: false
+      enable_unit_test: true
+      enable_coverage: true     # needs enable_unit_test: true
+      enable_dependency_scan: false
+      enable_secret_scan: false
+      coverage_threshold: 70
+```
+
+Want tests **without** a coverage gate? Set `enable_coverage: false`.
+
+### Scenario 4: security only
+
+Secret scan and dependency scan on every PR. Nothing else.
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      enable_lint: false
+      enable_unit_test: false
+      enable_coverage: false
+      enable_dependency_scan: true
+      enable_secret_scan: true
+```
+
+### Scenario 5: all checks + AI review on every PR
+
+First add the `AI_TOKEN` secret ([section 5](#5-setting-up-the-ai-review)).
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      enable_llm_review: true
+      llm_provider: gemini           # see section 5 for OpenAI, Claude, others
+      llm_model: gemini-2.5-flash
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}
+```
+
+### Scenario 6: AI review only on PRs into `main`
+
+Same as Scenario 5, but the AI review only runs when the PR **targets** `main`.
+PRs into other branches still get all the normal checks.
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: python
+      enable_llm_review: ${{ github.base_ref == 'main' }}
+      llm_provider: openai-compatible
+      llm_model: gpt-4o
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}
+```
+
+Other ways to pick branches — replace the `enable_llm_review` line:
+
+| You want the AI review on PRs into… | Write |
 |---|---|
-| `v1.1.0-rc.3` | **Next pre-release (not tagged until validated).** Adds the advisory [AI review](#ai-review-advisory). The `Feature/LLM-Review` branch pins its internal refs to it. |
-| `v1.1.0-rc.2` | **Current pre-release.** JS/TS + Python. Use this to test Python. |
-| `v1.1.0-rc.1` | Superseded: its secret scan failed pushes to `main` when *another* branch held a secret. Do not use. |
-| `main` | Phase 1 (JS/TS only). |
-| `v1` / `v1.x.y` | **Not created yet.** No stable release has been tagged. Docs that say `@v1` describe the intended steady state. |
+| every branch | `enable_llm_review: true` |
+| one branch, e.g. `develop` | `enable_llm_review: ${{ github.base_ref == 'develop' }}` |
+| a few branches | `enable_llm_review: ${{ contains(fromJSON('["main","develop"]'), github.base_ref) }}` |
+| every `release/…` branch | `enable_llm_review: ${{ startsWith(github.base_ref, 'release/') }}` |
 
-Build order is TS/JS → Python → Flutter → Unity; a language is not started
-until the previous one is reviewed and approved.
+The same trick works for **any** `enable_…` flag.
 
----
+### Scenario 7: project in a subfolder (monorepo)
 
-## How it works
+If your code is in, say, `services/api/` instead of the repo root:
 
-A consumer's `ci.yml` decides *when* CI runs and *which* checks are on. It
-calls [`central-ci.yml`](.github/workflows/central-ci.yml), which validates
-the inputs and starts one job per enabled check. Each job checks out the
-consumer repo, installs its toolchain with the `setup` action, and runs one
-composite action from [`.github/actions/`](.github/actions).
+```yaml
+name: CI
 
-```mermaid
-flowchart LR
-    subgraph consumer["Consumer repo"]
-        ci["ci.yml<br/>triggers + branch policy<br/>language + enable_* flags"]
-    end
+on:
+  pull_request:
 
-    subgraph runner["github-action-runner"]
-        central["central-ci.yml<br/>(workflow_call)"]
-        validate["validate-inputs<br/>language supported?<br/>coverage needs unit-test?"]
-        lint["Lint job"]
-        unit["Unit Test job"]
-        cov["Coverage job"]
-        dep["Dependency Scan job"]
-        sec["Secret Scan job"]
-        central --> validate
-        validate --> lint
-        validate --> unit
-        validate --> dep
-        validate --> sec
-        unit -- "coverage-report artifact" --> cov
-    end
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
 
-    ci -- "uses: ...central-ci.yml@ref" --> central
+jobs:
+  api:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      working_dir: services/api
 ```
 
-Every check job except Secret Scan first runs the
-[`setup`](.github/actions/setup/action.yml) action (Node.js or Python plus
-the project's own dependencies), then its check action. Jobs whose flag is
-`false` are skipped and never start a runner.
+Two projects in one repo? Add a second job (for example `web:` with
+`working_dir: apps/web`). Give each job a different name.
 
-### Inside one check
+### Scenario 8: different checks per branch
 
-Every check action follows the same shape, so all of them fail, summarise and
-report the same way:
+Quick checks on feature branches, everything on PRs into `main`:
 
-```mermaid
-flowchart TD
-    A["Validate inputs<br/>unsupported language = hard fail"] --> B["Verify tool and files exist<br/>missing = clear error naming the fix"]
-    B --> C["Run the tool<br/>exit code captured, not fatal yet"]
-    C --> D{"Classify"}
-    D -- "clean" --> P["pass"]
-    D -- "real findings" --> F["findings"]
-    D -- "tool crashed / no usable output" --> X["crash"]
-    P --> S["Job summary"]
-    F --> S
-    F --> N["Inline annotations, capped at 15"]
-    F --> U["SARIF: upload to Security tab<br/>+ downloadable artifact"]
-    P --> U
-    X --> E
-    S --> E{"Enforce"}
-    N --> E
-    U --> E
-    E -- "pass" --> OK["job green"]
-    E -- "findings or crash" --> FAIL["job red, message says what to do"]
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+permissions:            # all four are required, even for checks you turn off
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  ci:
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      enable_lint: true                                       # every PR
+      enable_secret_scan: true                                # every PR
+      enable_unit_test: ${{ github.base_ref == 'main' }}      # PRs into main
+      enable_coverage: ${{ github.base_ref == 'main' }}       # PRs into main
+      enable_dependency_scan: ${{ github.base_ref == 'main' }}
+      enable_llm_review: ${{ github.base_ref == 'main' }}
+      llm_provider: gemini
+      llm_model: gemini-2.5-flash
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}
 ```
 
-A **finding** is a real problem in your code (a lint error, a failing test, a
-vulnerable package). A **crash** is an infrastructure problem (bad config,
-network failure, missing tool). Both fail the job, but the message tells you
-which one it was. Nothing ever passes because a tool was missing or produced
-no output.
+> The org's [check policy](docs/CHECK-POLICY.md) asks for lint, tests and
+> coverage on **every** PR. Use this scenario only if your team agrees, and
+> make sure everything reaching `main` gets the full set.
 
----
+For rules that depend on both the event and the branch, see
+[policy job pattern](#policy-job-pattern-advanced).
 
-## Quick start
+### Scenario 9: org-recommended full setup
 
-**1. Give the consumer access (private runner repo only).** In *this* repo:
-Settings → Actions → General → **Access** → "Accessible from repositories in
-the DevAnsh-Digital-Solutions organization". Without it, consumer runs fail
-with *workflow was not found*.
-
-**2. Make sure your project has what its checks need.** See
-[What your project must provide](#what-your-project-must-provide).
-
-**3. Add `.github/workflows/ci.yml` to the consumer repo:**
+This matches [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md): all checks on
+every PR, AI review on PRs into `main`, secret scan again after merging to
+`main`, and a nightly dependency scan (to catch newly published
+vulnerabilities in code that was already merged).
 
 ```yaml
 name: CI
@@ -149,275 +360,226 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '0 3 * * *'   # every night at 03:00 UTC (runs on the default branch)
 
-# Ceiling for the central workflow's per-job permissions: checkout needs
-# contents:read; the SARIF upload needs security-events:write + actions:read.
-permissions:
+permissions:            # all four are required, even for checks you turn off
   contents: read
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
-  ci:
-    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1.1.0-rc.2
+  pr-checks:
+    if: github.event_name == 'pull_request'
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
-      language: python          # js | ts | python
-      enable_lint: true
-      enable_unit_test: true
-      enable_coverage: true     # requires enable_unit_test: true
-      enable_dependency_scan: true
-      enable_secret_scan: true
+      language: ts
       coverage_threshold: 80
+      enable_llm_review: ${{ github.base_ref == 'main' }}
+      llm_provider: gemini
+      llm_model: gemini-2.5-flash
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}
+
+  after-merge-secret-scan:
+    if: github.event_name == 'push'
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      enable_lint: false
+      enable_unit_test: false
+      enable_coverage: false
+      enable_dependency_scan: false
+      enable_secret_scan: true
+
+  nightly-dependency-scan:
+    if: github.event_name == 'schedule'
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    with:
+      language: ts
+      enable_lint: false
+      enable_unit_test: false
+      enable_coverage: false
+      enable_dependency_scan: true
+      enable_secret_scan: false
 ```
 
-**4. Open a pull request.** The checks appear as `CI / Lint`,
-`CI / Unit Test` and so on. Open the run's **Summary** page for the tables.
+#### Why a nightly run?
 
-**5. Make the checks required (optional, recommended).** Settings → Branches
-→ branch protection for `main` → *Require status checks to pass* → pick the
-`CI / …` checks.
+The `schedule:` trigger runs the **dependency scan** once a day, even when
+nobody pushes any code.
 
-Copy-paste variants (lint-only, security-only, full suite with nightly scan)
-are in [docs/consumers/typescript.md](docs/consumers/typescript.md) and
-[docs/consumers/python.md](docs/consumers/python.md). Those pages show
-`@v1`; until `v1` exists, use `@v1.1.0-rc.2`.
+- **The problem it solves:** security holes are found in popular packages
+  every day. A package that was safe when you merged it last month can be
+  listed as dangerous today. Your PR checks only run when code changes, so
+  without a nightly run nobody would notice until the next PR.
+- **Why daily:** new advisories are published continuously, and a daily scan
+  means you hear about one within 24 hours. The scan takes about a minute, so
+  it costs very little.
+- **What it does:** it scans the lockfile on your **default branch** (usually
+  `main`) and fails if it finds a HIGH or CRITICAL issue. Watch the *Actions*
+  tab, or turn on GitHub's failed-workflow email notifications, so a red
+  nightly run gets seen.
+- **Changing the time:** `cron: '0 3 * * *'` means 03:00 **UTC** every day.
+  For example, `'30 1 * * 1-5'` is 01:30 UTC on weekdays only. Runs can start
+  a few minutes late when GitHub is busy.
+- **Only the dependency scan runs at night.** Lint, tests and coverage can't
+  change unless code changes, so they don't need a nightly run, and the AI
+  review never runs on a schedule.
+- **Good to know:** GitHub only runs schedules from the default branch, and
+  pauses them in public repos after 60 days without activity.
 
----
+The same reasoning is why the secret scan runs again on **push to `main`**:
+it catches a secret that reached `main` without a PR, for example a direct
+push by an admin.
 
-## Inputs
-
-All inputs go under `with:` in the consumer's `ci.yml`.
-
-| Input | Type | Default | Description |
-|---|---|---|---|
-| `language` | string | *required* | `js`, `ts`, `python`, `flutter` or `unity`. Anything else fails `validate-inputs` with the supported list. |
-| `working_dir` | string | `.` | Project directory, relative to the repo root (for monorepos). |
-| `runner_label` | string | `ubuntu-latest` | Runner every job uses. The tooling assumes Linux x64. |
-| `enable_lint` | boolean | `true` | Run the lint check. |
-| `enable_unit_test` | boolean | `true` | Run the unit tests. Must be `true` when `enable_coverage` is `true`. |
-| `enable_coverage` | boolean | `true` | Gate on line coverage. Parses the unit-test job's report; never runs tests itself. |
-| `enable_dependency_scan` | boolean | `true` | Run the dependency (SCA) scan. |
-| `enable_secret_scan` | boolean | `true` | Run the secret scan. Language-agnostic. |
-| `coverage_threshold` | number | `80` | Minimum **line** coverage, in percent. |
-| `python_version` | string | `3.12` | Python installed when `language: python`. Ignored otherwise. |
-| `enable_llm_review` | boolean | **`false`** | Advisory [AI review](#ai-review-advisory) of the PR. Needs the `ai_token` secret and `llm_model`. Pull requests only. |
-| `llm_provider` | string | `openai-compatible` | `openai-compatible`, `anthropic` or `gemini`. See [AI review](#ai-review-advisory). |
-| `llm_base_url` | string | provider's standard URL | Set for OpenAI-compatible providers other than OpenAI. |
-| `llm_model` | string | *required if the review is on* | Model name exactly as the provider expects it. No default is guessed. |
-| `llm_max_output_tokens` | number | `4096` | Sent only to Anthropic, which requires a limit. |
-| `llm_timeout_seconds` | number | `120` | Per-request timeout. |
-| `llm_max_diff_kb` | number | `200` | Largest PR diff sent to the model. Bigger diffs are cut, and the comment says so. |
-| `llm_max_findings` | number | `20` | Most review points in the comment. |
-| `llm_exclude_paths` | string | lockfiles, `*.min.js`, `*.map`, `dist/**`, `build/**`, `coverage/**` | Comma-separated globs kept out of the diff sent to the model. |
-
-Secret: `ai_token` (optional; required only when `enable_llm_review` is
-`true`). See [AI review](#ai-review-advisory).
-
-Every check flag except `enable_llm_review` defaults to `true`, so **set the
-ones you don't want to `false` explicitly**. Enabling exactly one check runs exactly that check (plus
-`validate-inputs`). The one dependency is that coverage needs unit tests.
-
-The composite actions have a few more inputs that `central-ci.yml` does not
-expose yet. They run with these defaults:
-
-| Action | Input | Default used |
-|---|---|---|
-| lint | `fail_on` | `error` (ESLint warnings don't fail; any ruff finding fails) |
-| dependency-scan | `severity_threshold` | `HIGH` (blocks on HIGH and CRITICAL) |
-| unit-test | `test_command` | auto-detect |
-| coverage | `coverage_file` | auto-detect |
-| setup | `node_version` | `20` |
-| setup | `pip_extras` | `dev` |
+More language-specific examples: [docs/consumers/typescript.md](docs/consumers/typescript.md),
+[docs/consumers/python.md](docs/consumers/python.md).
 
 ---
 
-## The checks
+## 4. Rules for combining checks
 
-| Check | `js` / `ts` | `python` | Blocks on | Output |
-|---|---|---|---|---|
-| **Lint** | ESLint | `ruff check` | any finding at/above `fail_on` | summary table, annotations, `lint-sarif` |
-| **Unit test** | Jest or Vitest (auto-detected) | `pytest` | a failing test; no tests collected; runner missing | summary table, annotations per failing test (python) |
-| **Coverage** | lcov or Istanbul json-summary | `pytest-cov` Cobertura XML | line coverage < `coverage_threshold` | summary table (lines / branches / functions) |
-| **Dependency scan** | `osv-scanner` on the lockfile | `osv-scanner` on `requirements.txt` / `poetry.lock` / `Pipfile.lock` | a HIGH or CRITICAL vulnerability | counts table, per-package table, annotations, `dependency-scan-sarif` |
-| **Secret scan** | Gitleaks | Gitleaks | any finding | findings table (values redacted), `secret-scan-sarif` |
-
-Details worth knowing:
-
-- **Tools come from your project.** ESLint, Jest/Vitest, ruff, pytest and
-  pytest-cov must be in your own `package.json` / `requirements.txt`. The
-  setup action installs exactly what you pin and nothing else, so CI runs
-  the same versions developers do. The exceptions are `osv-scanner` and
-  `gitleaks`, which this repo downloads as pinned, SHA-256-verified binaries.
-- **Lint uses your config.** ESLint without a committed config fails with a
-  message saying so (the action never writes one). ruff uses the rules in
-  your `pyproject.toml` / `ruff.toml`, or ruff's defaults if there are none.
-- **Coverage gates on lines only.** Branches are reported; functions show
-  `N/A` for Python, because Cobertura has no function metric.
-- **Dependency scan merges duplicates.** One flaw published as GHSA-, PYSEC-
-  and CVE- records is one row. Advisories with no usable severity are listed
-  as `UNKNOWN` and never block. A failing scan prints this table, highest
-  severity first, in the summary *and* under the failure message in the
-  *Enforce* step's log, together with the command to fix it:
-
-  | Severity | Package | Installed | Vulnerability | Fixed in |
-  |---|---|---|---|---|
-  | HIGH | urllib3 | 1.26.4 | GHSA-q2q7-5pp4-w6pg (CVE-2021-33503) | 1.26.5 |
-
-- **Secret scan range.** On `pull_request` it scans only the PR's commits
-  (`base..head`). On `push` it scans the full history *reachable from the
-  pushed commit*, not other branches. Matched values are always redacted
-  in logs, the summary and the SARIF.
+| Rule | What happens if you break it |
+|---|---|
+| **Coverage needs unit tests.** Coverage reads the test run's report; it never runs tests itself. | The run stops at once with *"enable_coverage requires enable_unit_test"*. |
+| **Your `ci.yml` must always grant all four permissions** (`contents: read`, `security-events: write`, `actions: read`, `pull-requests: write`) — even if you only use one check. GitHub checks every job's permissions *before* anything runs, including jobs for checks you turned off. Each job still only gets what it needs. | **Nothing runs.** The run fails at once with *"Invalid workflow file … is requesting 'pull-requests: write', but is only allowed 'pull-requests: none'"* (or the same for `security-events`). |
+| **AI review needs** `AI_TOKEN` and `llm_model`. | The *AI Review (token check)* job fails with a message naming what's missing. Your other checks are not affected. |
+| **AI review only runs on pull requests.** | On a push it is skipped with a notice. |
+| **AI review reads lint, tests and coverage.** It does not read the dependency or secret scan. | If those three are off, it reviews only the code changes. |
+| **Every check except the AI review is on by default.** | Leaving a flag out means *on*. Write `false` to turn a check off. |
+| **One check alone is fine.** Turning on just one check runs just that check. | — |
 
 ---
 
-## AI review (advisory)
+## 5. Setting up the AI review
 
-An optional check that has an LLM review the pull request and **explain the
-results of lint, unit tests and coverage**. It comments; it never blocks
-(see [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md)). It is off by default
-because it costs money and sends the PR diff to an LLM provider.
+The AI review sends the pull request's code changes, plus the lint, test and
+coverage results, to an AI model. It then posts **one comment** on the PR with
+a verdict and a to-do list. It **never blocks** a merge.
+
+### Step 1: get an API key and save it as a secret
+
+1. Get a key from your provider (for example
+   [Google AI Studio](https://aistudio.google.com/apikey) for Gemini, or
+   [OpenAI](https://platform.openai.com/api-keys)).
+2. In your repo: Settings → Secrets and variables → Actions → **New repository
+   secret**.
+3. Name: **`AI_TOKEN`**. Value: **only the key** — no quotes, no spaces.
+
+### Step 2: choose the provider and model
+
+Copy the two (or three) lines for your provider into `with:`:
+
+| Provider | Lines to add |
+|---|---|
+| **Google Gemini** | `llm_provider: gemini`<br>`llm_model: gemini-2.5-flash` |
+| **OpenAI** | `llm_provider: openai-compatible`<br>`llm_model: gpt-4o` |
+| **Anthropic Claude** | `llm_provider: anthropic`<br>`llm_model:` *a Claude model name* |
+| **Groq, OpenRouter, Mistral, DeepSeek, Together, Ollama, LiteLLM…** | `llm_provider: openai-compatible`<br>`llm_base_url:` *that provider's API address*<br>`llm_model:` *its model name* |
+
+- `llm_model` has **no default**: write the exact name your provider uses.
+- Only set `llm_base_url` for the last row. Do **not** set it for `gemini`,
+  `anthropic` or plain OpenAI — a wrong address gives an HTTP 404.
+
+### Step 3: turn it on and pass the secret
+
+```yaml
+    with:
+      enable_llm_review: true      # or a branch rule, see Scenario 6
+      llm_provider: gemini
+      llm_model: gemini-2.5-flash
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}   # or replace the whole block with: secrets: inherit
+```
+
+Your `permissions:` block must include `pull-requests: write` (every scenario
+above already has it).
+
+### What happens on a PR
 
 ```mermaid
 flowchart LR
-    pre["llm-preflight<br/>AI_TOKEN present?<br/>provider accepts it?"] -->|ready| rev
-    lint["lint"] --> rev
-    ut["unit-test"] --> rev
-    cov["coverage"] --> rev
-    rev["llm-review<br/>lint + test + coverage outputs<br/>+ PR diff -> LLM -> PR comment"]
+    pre["AI Review (token check)<br/>key present? key accepted?"] -->|ok| rev
+    lint["Lint"] --> rev
+    ut["Unit Test"] --> rev
+    cov["Coverage"] --> rev
+    rev["AI Review<br/>results + code changes → AI → one PR comment"]
 ```
 
-**Setup.**
+1. **AI Review (token check)** runs first, in a few seconds. If the key is
+   missing or wrong, it stops here with a clear message — before any code is
+   sent anywhere.
+2. Lint, tests and coverage run as usual.
+3. When they finish (**pass or fail**), **AI Review** sends the results and the
+   code changes to the model and posts the comment.
 
-1. Add a repository (or organization) secret named **`AI_TOKEN`** with your
-   provider's API key: Settings → Secrets and variables → Actions.
-2. Turn the review on, name the model, and map the secret. Branch scoping is
-   one expression in your own `ci.yml`:
-
-```yaml
-jobs:
-  ci:
-    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1.1.0-rc.3
-    with:
-      language: ts
-      # every PR:
-      enable_llm_review: true
-      # only PRs into one branch:
-      # enable_llm_review: ${{ github.base_ref == 'develop' }}
-      # several branches:
-      # enable_llm_review: ${{ contains(fromJSON('["main","develop"]'), github.base_ref) }}
-      # release branches:
-      # enable_llm_review: ${{ startsWith(github.base_ref, 'release/') }}
-      llm_provider: openai-compatible
-      llm_model: gpt-4o
-    secrets:
-      ai_token: ${{ secrets.AI_TOKEN }}     # or: secrets: inherit
-    permissions:
-      contents: read
-      pull-requests: write                  # lets the review post its comment
-      security-events: write
-      actions: read
-```
-
-Add `pull-requests: write` to the caller's top-level `permissions:` as well
-if you set them there. The central jobs never get more than that.
-
-**Providers.** Three wire formats cover essentially every model:
-
-| `llm_provider` | Use for | `llm_base_url` | Example `llm_model` |
-|---|---|---|---|
-| `openai-compatible` (default) | OpenAI, Gemini (OpenAI endpoint), Groq, OpenRouter, Mistral, DeepSeek, Together, Ollama, vLLM, LiteLLM, most gateways | OpenAI's by default. Gemini: `https://generativelanguage.googleapis.com/v1beta/openai` | `gpt-4o`, `gemini-2.5-flash` |
-| `anthropic` | Claude models | `https://api.anthropic.com` by default | a Claude model name |
-| `gemini` | Google's native Gemini API | `https://generativelanguage.googleapis.com` by default | `gemini-2.5-flash` |
-
-The token is always the same `AI_TOKEN` secret; the action sends it the way
-the provider expects. Requests are minimal (model + messages only, no
-temperature or response-format parameters), because newer models reject
-parameters they don't support. The model is asked for JSON in the prompt and
-the reply is validated, with one retry.
-
-**Token check before anything starts.** The `AI Review (token check)` job runs
-at the very start, in parallel with the other checks. It fails within seconds,
-with a message saying what to fix, if:
-
-- `AI_TOKEN` is empty (also happens on PRs from forks and Dependabot PRs,
-  which don't receive repository secrets);
-- the provider rejects the key (it asks the free model-list endpoint, so no
-  tokens are spent);
-- `llm_model`, `llm_provider` or `llm_base_url` is invalid.
-
-The review job runs only when that check passed. On a non-PR event
-(a push) the review is skipped with an explicit notice.
-
-**What it reviews.** After lint, unit-test and coverage finish (pass *or*
-fail), it sends the model: the lint findings (SARIF), the failing tests, the
-coverage figure against `coverage_threshold` plus the least-covered files this
-PR touched, and the PR diff (minus `llm_exclude_paths`, capped by
-`llm_max_diff_kb`). If a job left no output it says "no output available"
-rather than guessing.
-
-**What you get.** One comment on the PR, updated in place on every push (so the
-history isn't spammed), also shown in the job summary:
+### What the comment looks like
 
 ```text
 🤖 AI review
 Verdict: ❌ Needs changes — 1 high · 2 medium
-| Check | Result | Details |
-| Lint | ❌ | 3 finding(s): 1 error, 2 warning |
-| Unit tests | ✅ | 42 passed, 0 failed, 1 skipped (43 total) |
-| Coverage | ❌ | 76.4% lines vs 80% required |
 
-### 1. Lint
-- [ ] 🟠 Medium · src/api.ts:12 — Unused variable `token`
-    Why it matters …
-    💡 Fix: remove it or use it in the request.
-### 2. Unit tests   …
-### 3. Coverage     …
-### 4. Code review  …
+| Check      | Result | Details                          |
+| Lint       | ✅     | no findings                      |
+| Unit tests | ✅     | 12 passed, 0 failed (12 total)   |
+| Coverage   | ❌     | 66.67% lines vs 80% required     |
+
+1. Lint          ✅ Nothing to flag.
+2. Unit tests    ✅ Nothing to flag.
+3. Coverage
+   - [ ] 🔴 High · src/multiply.ts — no tests cover this file
+         💡 Fix: add a test that calls multiply()
+4. Code review
+   - [ ] 🟠 Medium · .github/workflows/ci.yml:4 — push trigger removed
+         💡 Fix: …
 ```
 
-The check table is computed from the real outputs, not written by the model.
-Every point is a checkbox so reviewers can tick items off. A new push
-regenerates the comment, which resets the ticks.
+- The **results table** comes from the real check output, not from the AI.
+- Each point is a **checkbox** you can tick as you fix it.
+- There is **one comment per PR**. Each new push **edits** that same comment
+  (it shows "edited"); GitHub does not send a notification for edits, and
+  ticked boxes reset.
+- The full review is also on the run's **Summary** page.
 
-**Safety.** The PR diff is treated as untrusted data: it is fenced inside a
-random boundary, the model is told never to follow instructions found in it,
-its reply must match a fixed JSON shape, and before posting the text is
-HTML-escaped, `@mentions` are defused, link and image targets are dropped, and
-file references are checked against the real diff. The jobs get
-`pull-requests: write` at most, never `contents: write`, and both are
-`continue-on-error`, so a provider outage can never fail your run.
+### Before using it on real projects
+
+- **Your code leaves GitHub.** The PR's changes are sent to the provider you
+  choose. Check that your clients' contracts allow that. Google's **free**
+  Gemini tier may use what you send to improve its products; use a paid tier
+  for private code.
+- **It costs money** per push on every reviewed PR. Limiting it to PRs into
+  `main` (Scenario 6) keeps the cost down.
+- **AI can be wrong.** Treat it as a second pair of eyes, never as the
+  reason to merge.
 
 ---
 
-## What your project must provide
+## 6. What your project must contain
 
-### JS / TS
+The CI uses **your** tools at **your** versions; it never installs extra ones.
 
-| Needed for | What |
+**JavaScript / TypeScript**
+
+| For | You need |
 |---|---|
-| setup | A committed lockfile: `package-lock.json`, `pnpm-lock.yaml` or `yarn.lock` |
-| lint | An ESLint config (`eslint.config.*`, `.eslintrc*` or `"eslintConfig"` in `package.json`) and `eslint` as a devDependency |
-| unit test | `jest` **or** `vitest` (both at once is an error), as a devDependency or via its config file |
-| coverage | Jest: built in. Vitest: `@vitest/coverage-v8` or `@vitest/coverage-istanbul` |
+| any check | a committed lockfile: `package-lock.json`, `pnpm-lock.yaml` or `yarn.lock` |
+| lint | an ESLint config file and `eslint` in `devDependencies` |
+| unit tests | `jest` **or** `vitest` (not both) in `devDependencies` |
+| coverage | Jest: nothing extra. Vitest: `@vitest/coverage-v8` |
 
-### Python
+**Python**
 
-| Needed for | What |
+| For | You need |
 |---|---|
-| setup | `requirements.txt` (preferred) or `pyproject.toml`. With only `pyproject.toml`, the project is installed with `pip install -e ".[dev]"`, so put the dev tools in a `dev` extra. |
-| lint | `ruff` installed; rules in `[tool.ruff]` |
-| unit test | `pytest` installed and at least one test (`test_*.py`) |
-| coverage | `pytest-cov` installed; `[tool.coverage.run] source = ["src"]` so tests don't count toward coverage |
-| dependency scan | Exact pins (`==`), **transitive dependencies included** (for example `pip freeze > requirements.txt`), or a `poetry.lock` / `Pipfile.lock`. osv-scanner reads `requirements.txt` literally and does not resolve ranges. |
+| any check | `requirements.txt` (preferred) or `pyproject.toml` (with dev tools in a `dev` extra) |
+| lint | `ruff` installed |
+| unit tests | `pytest` installed and at least one `test_*.py` file |
+| coverage | `pytest-cov` installed, and `[tool.coverage.run] source = ["src"]` |
+| dependency scan | exact versions (`==`) for **every** package, e.g. from `pip freeze`, or a `poetry.lock` / `Pipfile.lock` |
 
-A minimal Python layout that passes every check:
-
-```
-pyproject.toml        ruff, pytest and coverage config
-requirements.txt      pinned: your deps + ruff, pytest, pytest-cov
-src/<package>/...
-tests/test_*.py
-```
+A minimal Python `pyproject.toml` that works:
 
 ```toml
 [tool.ruff]
@@ -425,7 +587,7 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]      # tests import the package without installing it
+pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["src"]
@@ -434,74 +596,169 @@ branch = true
 
 ---
 
-## Branch and trigger policy
+## 7. Reading the results
 
-**This repo is branch-agnostic by design.** It never looks at branch names.
-Each consumer decides in its own `ci.yml` which events and branches run which
-checks. The org default comes from [docs/CHECK-POLICY.md](docs/CHECK-POLICY.md):
+| Where | What you see |
+|---|---|
+| **PR → checks list** | One line per check: ✅ passed, ❌ failed, ⊘ skipped (turned off) |
+| **PR → conversation** | The AI review comment (if on) |
+| **PR → Files changed** | Notes on the exact lines with problems (up to 15 per check) |
+| **Check → Details → Summary** | A table for each check: what was found, test totals, coverage %, vulnerable packages |
+| **Check → Details → last step** | Why it failed and what to do next |
+| **Run → Artifacts** | Downloadable full reports (`lint-sarif`, `coverage-report`, `llm-review`, …) |
+| **Security → Code scanning** | Lint and scan findings, if your plan includes GitHub Code Security |
 
-| Check | Runs on | Blocking? |
+On a **private repo without GitHub Code Security**, an *Upload SARIF* step
+shows a warning and carries on. That is normal; all results are still in the
+summary and artifacts.
+
+---
+
+## 8. All settings
+
+Everything goes under `with:` in your `ci.yml`.
+
+**Main settings**
+
+| Setting | Default | What it does |
 |---|---|---|
-| Lint, unit tests, coverage | every PR, all target branches | yes |
-| Secret scan | every PR + push to `main` | yes |
-| Dependency scan | every PR + nightly on `main` | on HIGH / CRITICAL |
-| LLM PR review | opt-in per repo/branch (`enable_llm_review`, PRs only) | **never** (advisory) |
-| SAST, IaC scan, SBOM | *later phases* | see CHECK-POLICY |
+| `language` | *required* | `js`, `ts` or `python` |
+| `working_dir` | `.` | Folder of your project inside the repo |
+| `enable_lint` | `true` | Lint check on/off |
+| `enable_unit_test` | `true` | Unit tests on/off |
+| `enable_coverage` | `true` | Coverage gate on/off (needs unit tests) |
+| `enable_dependency_scan` | `true` | Dependency scan on/off |
+| `enable_secret_scan` | `true` | Secret scan on/off |
+| `coverage_threshold` | `80` | Minimum % of lines your tests must run |
+| `python_version` | `3.12` | Python version (Python projects only) |
+| `runner_label` | `ubuntu-latest` | Machine type; must be Linux x64 |
 
-There are two ways to express a policy in `ci.yml`.
+**AI review settings**
 
-### Pattern A: one job per event
+| Setting | Default | What it does |
+|---|---|---|
+| `enable_llm_review` | `false` | AI review on/off |
+| `llm_provider` | `openai-compatible` | `gemini`, `openai-compatible` or `anthropic` |
+| `llm_model` | *none — required* | Exact model name |
+| `llm_base_url` | the provider's own | Only for other OpenAI-compatible providers |
+| `llm_max_findings` | `20` | Most points in the comment |
+| `llm_max_diff_kb` | `200` | Largest code change sent; bigger ones are cut (the comment says so) |
+| `llm_exclude_paths` | lockfiles, `dist/**`, `build/**`, `coverage/**`, `*.min.js`, `*.map` | Files never sent to the AI (comma-separated) |
+| `llm_timeout_seconds` | `120` | How long to wait for the AI |
+| `llm_max_output_tokens` | `4096` | Reply length limit (used by Anthropic only) |
 
-Simple and explicit. Good when the policy only depends on the event type. Each
-job calls the central workflow with its own flags and an `if:`:
+**Secret:** `ai_token` — only needed for the AI review.
 
-```yaml
-jobs:
-  pr-checks:
-    if: github.event_name == 'pull_request'
-    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1.1.0-rc.2
-    with: { language: python, enable_dependency_scan: true }   # every flag defaults to true
+**Fixed for now** (not changeable from `ci.yml` yet): ESLint fails on errors
+only (not warnings); the dependency scan blocks on HIGH and CRITICAL; tests and
+coverage files are auto-detected; Node.js 20; Python dev extra `dev`.
 
-  push-main-secret-scan:
-    if: github.event_name == 'push'
-    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1.1.0-rc.2
-    with:
-      language: python
-      enable_lint: false
-      enable_unit_test: false
-      enable_coverage: false
-      enable_dependency_scan: false
-      enable_secret_scan: true
-```
+---
 
-Full versions are in [docs/consumers/](docs/consumers).
+## 9. Troubleshooting
 
-### Pattern B: a policy job (branch-aware)
+| You see | Why | Fix |
+|---|---|---|
+| *"workflow was not found"* and **no jobs run** | Your repo is **public**, outside the org, or the access setting is off | See [section 1](#1-will-it-work-for-my-repo) and Step 1 of [setup](#2-first-time-setup-5-steps) |
+| `unsupported language '…'` | Typo in `language` | Use `js`, `ts` or `python` |
+| `language 'flutter' is not yet implemented` | Not built yet | Turn the check off or wait for that phase |
+| `enable_coverage requires enable_unit_test` | Coverage on, tests off | Turn tests on, or coverage off |
+| `no lockfile found` | No lockfile committed | Commit `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` |
+| `no Python dependency file found` | No `requirements.txt` / `pyproject.toml` | Commit the file the message names |
+| `required command 'ruff' not found` / `pytest is not installed` | Tool missing from your dependencies | Add it to `requirements.txt` |
+| `pytest collected no tests` | No `test_*.py` files found | Add tests, or fix `testpaths` |
+| Coverage: `no coverage file was produced` | `pytest-cov` missing, or tests crashed | Add `pytest-cov`; look at the Unit Test job |
+| Coverage lower than expected | Tests themselves are being counted | Set `[tool.coverage.run] source = ["src"]` |
+| Lint says *crash*, not *findings* | Broken linter config | Read the *Run linter* step |
+| Dependency scan misses a known issue | Version ranges in `requirements.txt` | Pin exact versions (`pip freeze`) or use a lockfile |
+| *Upload SARIF* warning about Advanced Security | Private repo without Code Security | Normal, nothing to do |
+| `AI_TOKEN is not set` | Secret missing, not passed (`secrets:`), or PR from a fork / Dependabot | Add the secret and the `secrets:` block |
+| `AI_TOKEN was rejected` / HTTP 401 / "API key not valid" | Wrong or expired key, or key for another provider | Make a new key and update the secret |
+| AI Review: HTTP 404 | Wrong `llm_model`, or an `llm_base_url` that doesn't match `llm_provider` | Fix the model name; remove `llm_base_url` for `gemini` / `anthropic` / OpenAI |
+| AI Review: HTTP 429 / quota | Rate limit or no credit left | Wait and re-run, or add billing credit |
+| `llm_model is empty` | AI review on without a model | Add `llm_model` |
+| *"Invalid workflow file … nested job '…' is requesting 'pull-requests: write' (or 'security-events: write'), but is only allowed '…: none'"* and **no jobs run** | Your `ci.yml`'s `permissions:` block is missing one of the four required lines. GitHub checks this even for checks you turned off | Copy the `permissions:` block from any [scenario](#3-pick-your-scenario-copy-paste) (all four lines) |
+| AI review ran, but no comment | PR from a fork (its token is read-only) | Expected; the review is still on the Summary page |
+| AI review says *"no output available"* for a check | That check crashed before saving its report | Open that check's log |
+| "I pushed but the AI comment didn't change" | It **edits** the same comment | Scroll up to the comment; it shows "edited" and the new commit at the bottom |
 
-Use this when the checks depend on **which branch** a PR targets or a push
-lands on. A tiny `policy` job turns the event and branch into one boolean per
-check, and a single `ci` job passes them to the central workflow.
-`python-private` uses this pattern:
+---
+
+## 10. Under the hood
+
+### How it works
+
+Your `ci.yml` decides **when** CI runs and **which** checks are on. It calls
+[`central-ci.yml`](.github/workflows/central-ci.yml), which checks your
+settings and starts one job per check. Each job runs one action from
+[`.github/actions/`](.github/actions).
 
 ```mermaid
 flowchart LR
-    ev["Event<br/>pull_request / push /<br/>schedule / workflow_dispatch"] --> pol
-    br["Branch<br/>PR: target branch<br/>push: pushed branch"] --> pol
-    pol["policy job<br/>one case block"] --> flags["lint / unit_test / coverage /<br/>dependency_scan / secret_scan<br/>true or false"]
-    flags --> cijob["ci job<br/>central-ci.yml@ref"]
+    subgraph consumer["Your repo"]
+        ci["ci.yml<br/>when + which checks"]
+    end
+
+    subgraph runner["github-action-runner"]
+        central["central-ci.yml"]
+        validate["validate-inputs"]
+        lint["Lint"]
+        unit["Unit Test"]
+        cov["Coverage"]
+        dep["Dependency Scan"]
+        sec["Secret Scan"]
+        pre["AI Review (token check)"]
+        ai["AI Review"]
+        central --> validate
+        validate --> lint & unit & dep & sec & pre
+        unit -- "coverage report" --> cov
+        pre --> ai
+        lint & unit & cov --> ai
+    end
+
+    ci -- "uses: …central-ci.yml@v1" --> central
 ```
 
-| Event | Branch | Checks (as configured in python-private) |
-|---|---|---|
-| PR into | `main`, `release/*` | all five |
-| PR into | `dev` | lint only |
-| PR into | anything else | none |
-| push to | `main` (a merge) | all five |
-| push to | `dev` | lint only |
-| schedule | `main` | dependency scan |
-| manual run | any branch | whatever the `checks` input lists, e.g. `lint,secret-scan` |
+Every check behaves the same way:
 
-The whole policy is one `case` block, so changing a rule is a one-line edit:
+```mermaid
+flowchart TD
+    A["Check settings<br/>unsupported language = stop"] --> B["Check the tool and files exist<br/>missing = clear error naming the fix"]
+    B --> C["Run the tool"]
+    C --> D{"Result"}
+    D -- "clean" --> P["pass"]
+    D -- "real problems" --> F["findings"]
+    D -- "tool broke / no output" --> X["crash"]
+    P --> S["Summary table + reports"]
+    F --> S
+    F --> N["Notes on the lines"]
+    X --> FAIL
+    S --> E{"Enforce"}
+    N --> E
+    E -- "pass" --> OK["✅ green"]
+    E -- "findings" --> FAIL["❌ red, message says what to do"]
+```
+
+A **finding** is a real problem in your code. A **crash** is a setup problem
+(bad config, missing tool, network). Both fail the check, and the message says
+which one it was. A check never passes just because a tool was missing.
+
+### What each check uses
+
+| Check | JS / TS | Python | Notes |
+|---|---|---|---|
+| Lint | ESLint | `ruff check` | Uses your own config |
+| Unit tests | Jest or Vitest (auto-detected) | `pytest` | Failing tests are listed with their messages |
+| Coverage | lcov / Istanbul summary | `pytest-cov` | Gates on **lines**; branches are reported only |
+| Dependency scan | osv-scanner on the lockfile | osv-scanner on `requirements.txt` / `poetry.lock` / `Pipfile.lock` | Duplicate advisories are merged into one row; the failure message shows the fix command |
+| Secret scan | Gitleaks | Gitleaks | PRs: only the PR's commits. Push: history of the pushed commit. Values are always hidden |
+
+### Policy job pattern (advanced)
+
+When the checks depend on **both** the event (PR, push, nightly) and the
+branch, a small `policy` job can turn them into one true/false per check,
+which a single `ci` job then passes on. `python-private` uses this; see its
+`ci.yml` for the full version.
 
 ```yaml
 jobs:
@@ -510,205 +767,114 @@ jobs:
     permissions: {}
     outputs:
       lint: ${{ steps.resolve.outputs.lint }}
-      unit_test: ${{ steps.resolve.outputs.unit_test }}
-      coverage: ${{ steps.resolve.outputs.coverage }}
-      dependency_scan: ${{ steps.resolve.outputs.dependency_scan }}
-      secret_scan: ${{ steps.resolve.outputs.secret_scan }}
-      any: ${{ steps.resolve.outputs.any }}
+      full: ${{ steps.resolve.outputs.full }}
     steps:
       - id: resolve
         shell: bash
-        env:   # branch names reach the script through env only, never interpolated
+        env:
           EVENT: ${{ github.event_name }}
           TARGET: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
         run: |
           set -euo pipefail
-          lint=false; unit_test=false; coverage=false; dependency_scan=false; secret_scan=false
-          full() { lint=true; unit_test=true; coverage=true; dependency_scan=true; secret_scan=true; }
+          lint=false; full=false
           case "${EVENT}:${TARGET}" in
-            pull_request:main|pull_request:release/*|push:main) full ;;
-            pull_request:dev|push:dev)                           lint=true ;;
-            schedule:*)                                          dependency_scan=true ;;
+            pull_request:main|push:main) lint=true; full=true ;;
+            pull_request:dev|push:dev)   lint=true ;;
           esac
-          any=false
-          for f in "$lint" "$unit_test" "$coverage" "$dependency_scan" "$secret_scan"; do
-            if [ "$f" = true ]; then any=true; fi
-          done
-          printf '%s\n' "lint=$lint" "unit_test=$unit_test" "coverage=$coverage" \
-            "dependency_scan=$dependency_scan" "secret_scan=$secret_scan" "any=$any" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "lint=$lint" "full=$full" >> "$GITHUB_OUTPUT"
 
   ci:
     needs: policy
-    if: needs.policy.outputs.any == 'true'
-    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1.1.0-rc.2
+    if: needs.policy.outputs.lint == 'true'
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
     with:
       language: python
-      enable_lint: ${{ needs.policy.outputs.lint == 'true' }}
-      enable_unit_test: ${{ needs.policy.outputs.unit_test == 'true' }}
-      enable_coverage: ${{ needs.policy.outputs.coverage == 'true' }}
-      enable_dependency_scan: ${{ needs.policy.outputs.dependency_scan == 'true' }}
-      enable_secret_scan: ${{ needs.policy.outputs.secret_scan == 'true' }}
+      enable_lint: true
+      enable_unit_test: ${{ needs.policy.outputs.full == 'true' }}
+      enable_coverage: ${{ needs.policy.outputs.full == 'true' }}
+      enable_dependency_scan: ${{ needs.policy.outputs.full == 'true' }}
+      enable_secret_scan: ${{ needs.policy.outputs.full == 'true' }}
 ```
 
-Also list the branches under `on:` (for example
-`pull_request: { branches: [main, dev, 'release/**'] }`) so unrelated
-branches don't start a run at all. The python-private `ci.yml` is the
-complete version, with a `workflow_dispatch` input for manual runs.
+### Permissions and security
 
-> A policy that runs fewer checks than CHECK-POLICY.md on some branches (like
-> "lint only on `dev`") is the consumer's call, but say so in that repo's
-> README. Anything merged to `main` should still go through the full suite.
+- Your `ci.yml`'s `permissions:` is the **maximum** the checks can use; each
+  job asks for less. Lint and the scans need `security-events: write` and
+  `actions: read`; the AI review needs `pull-requests: write`. GitHub checks
+  every job against this maximum before the run starts, *even jobs whose check
+  is turned off*, which is why all four lines are always required. Nothing
+  ever gets `contents: write`.
+- Every third-party action is pinned to an exact commit. Downloaded tools
+  (osv-scanner, gitleaks) are checked against a known SHA-256 before running.
+- Settings and PR data reach scripts only through environment variables,
+  never pasted into commands. `pull_request_target` is never used.
+- Secret-scan results always hide the matched value.
+- `AI_TOKEN` is sent only in a request header, only to an `https://` address,
+  and is removed from every error message. PR content is treated as untrusted:
+  the AI is told to ignore instructions inside it, its reply must match a
+  fixed format, and the posted text is cleaned (HTML escaped, `@mentions` and
+  links disabled, file references checked against the real changes).
 
----
+### Versions
 
-## Reading the results
-
-| Where | What you get |
+| Use | When |
 |---|---|
-| **PR checks list** | One status per enabled check: `CI / Lint`, `CI / Unit Test`, … |
-| **Run → Summary** | Each job's table: lint findings, test totals and failures, coverage vs threshold, vulnerability counts and per-package table, secret findings |
-| **Files changed tab** | Inline annotations on the offending lines (up to 15 per check; the rest are in the table) |
-| **Job log, last step** | The *Enforce* step says why the job failed and what to do; the dependency scan prints its findings table here |
-| **Run → Artifacts** | `lint-sarif`, `dependency-scan-sarif`, `secret-scan-sarif` (30 days); `coverage-report` (7 days) |
-| **Security → Code scanning** | The same SARIF, when GitHub Code Security is available (public repos, or private repos with a license) |
+| `@v1` | **Recommended.** Always the latest `v1.x.y`; you get fixes automatically. |
+| `@v1.0.0` | You want nothing to change until you update it yourself. |
+| `@main` | Don't — it can change at any time. |
+| `@v1.1.0-rc.*` | Don't — old test versions from before `v1.0.0`. |
 
-On a **private repo without Code Security**, the *Upload SARIF* step shows a
-warning ("Advanced Security must be enabled…") and continues. That is
-expected. The summary, annotations and artifacts don't depend on it.
+A breaking change gets a new major version (`v2`); `v1` keeps working.
 
----
+**Releasing (maintainers).** `central-ci.yml` refers to its own actions by tag
+(a local `./` path would point inside *your* repo, and `uses:` can't take a
+variable), so every release edits those lines:
 
-## Permissions and security
+1. Make and test the change on a branch (unit tests, `self-check` green).
+2. Set every internal `uses: …@vX.Y.Z` in `central-ci.yml` to the new tag.
+3. Commit, tag (e.g. `v1.0.1`, or `v1.1.0-rc.1` for a test version), push.
+4. Test on a real consumer repo: a passing PR and a deliberately failing one.
+5. With approval: merge to `main`, then move `v1` to the new tag.
 
-- **Consumer `ci.yml`** must grant at least `contents: read`,
-  `security-events: write` and `actions: read` at the top level. These are the
-  ceiling; each central job narrows them further. Jobs without a SARIF upload
-  (unit test, coverage) get `contents: read` only.
-- Every third-party action is pinned to a full commit SHA with a
-  `# vX.Y.Z` comment. Downloaded binaries (osv-scanner, gitleaks, shellcheck)
-  are pinned by version and checked against a SHA-256 before running.
-- Inputs and event data reach shell scripts only through `env:`, never
-  through `${{ }}` inside a script body. `pull_request_target` is never used.
-- Secret-scan output is always `--redact`ed.
-- No secrets are needed beyond the default `GITHUB_TOKEN`, except `ai_token`
-  when the optional AI review is on. It is passed to the action as a masked
-  input, sent only in an HTTP header to the provider URL you configure
-  (which must be `https://`), and scrubbed from every error message.
+Merging to `main` and moving `v1` always need human approval.
 
----
+### Working on this repo
 
-## Versioning and releases
+Read [CLAUDE.md](CLAUDE.md) first: one action per check, language handled with
+a `case` inside each action, `set -euo pipefail` in every shell step, clear
+error messages, pinned actions, minimal permissions, and a comment header on
+every `action.yml`.
 
-| Tag | Meaning |
-|---|---|
-| `vX.Y.Z` | An immutable release. Never moved once pushed. |
-| `vX.Y.Z-rc.N` | An immutable pre-release, for validating a phase on real consumer repos before it is released. |
-| `v1` (moving) | Will point at the latest compatible `v1.x.y`. Consumers who want fixes automatically pin `@v1`; consumers who want zero drift pin a full `vX.Y.Z`. |
-
-A breaking change gets a new major (`v2`), and the previous major keeps
-working.
-
-**Why every release edits `central-ci.yml`.** The workflow's own `uses:`
-lines must name a fixed ref: a local `./.github/actions/...` path would
-resolve inside the *consumer's* checkout, and `uses:` cannot take an
-expression. So each tagged commit pins those lines to its own tag.
-
-To cut a pre-release or release:
-
-```mermaid
-flowchart LR
-    a["Change actions/scripts<br/>on a feature branch"] --> b["Unit tests pass<br/>self-check green"]
-    b --> c["Set every internal uses:<br/>in central-ci.yml to @NEW_TAG"]
-    c --> d["Commit, tag NEW_TAG,<br/>push branch + tag"]
-    d --> e["Consumers pin @NEW_TAG<br/>green path + failing paths"]
-    e --> f{"Approved?"}
-    f -- "no: fix" --> a
-    f -- "yes" --> g["Merge to main,<br/>tag vX.Y.Z, move v1"]
-```
-
-```bash
-# example: next pre-release
-sed -i 's/@v1\.1\.0-rc\.2/@v1.1.0-rc.3/g' .github/workflows/central-ci.yml
-git commit -am "central-ci: pin internal refs to v1.1.0-rc.3"
-git tag -a v1.1.0-rc.3 -m "Phase 2 pre-release 3"
-git push origin HEAD v1.1.0-rc.3
-```
-
-Merging to `main` and creating or moving `v1` need human approval.
-
----
-
-## Troubleshooting
-
-| Message / symptom | Cause | Fix |
-|---|---|---|
-| *workflow was not found* / *not accessible* | Runner repo is private and doesn't share its workflows | Step 1 of [Quick start](#quick-start) |
-| `unsupported language '…'` | Typo in `language` | Use `js`, `ts` or `python` |
-| `language 'flutter' is not yet implemented` | Language not built yet | Disable the check or wait for that phase |
-| `enable_coverage requires enable_unit_test` | Coverage on, unit tests off | Turn unit tests on, or coverage off |
-| `no lockfile found` | JS/TS project without a committed lockfile | Commit `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` |
-| `no Python dependency file found` | No `requirements.txt` / `pyproject.toml` (setup), or no `requirements.txt` / `poetry.lock` / `Pipfile.lock` (scan) | Commit the file the message names |
-| `required command 'ruff' not found` / `pytest is not installed` | Tool not in your dependency file | Add it to `requirements.txt` (or the `dev` extra) |
-| `pytest collected no tests` | No `test_*.py`, or wrong `testpaths` | Add tests or fix `[tool.pytest.ini_options]` |
-| Coverage `no coverage file was produced` | `pytest-cov` missing, or unit tests crashed | Add `pytest-cov`; check the Unit Test job |
-| Coverage counts tests or is unexpectedly low | `[tool.coverage.run] source` not set | Set `source = ["src"]` |
-| Lint says *crash*, not *findings* | Linter config or parser error | Read the *Run linter* step log |
-| Dependency scan finds nothing though a package is vulnerable | `requirements.txt` has ranges or misses transitive deps | Pin exactly with `pip freeze`, or use a lockfile |
-| *Upload SARIF* warns about Advanced Security | Private repo without Code Security | Expected; use the summary and artifacts |
-| `git push` rejected: *repository rule violations* when committing a test secret | GitHub push protection blocks secret-shaped values | Use a private test repo, or allow it via the link in the push error if it's genuinely fake |
-| `AI Review (token check)` fails: *AI_TOKEN is not set* | Secret missing, not mapped (`ai_token:` or `secrets: inherit`), or the PR is from a fork or Dependabot | Add the secret and map it. Fork PRs cannot be reviewed |
-| `AI_TOKEN was rejected by provider …` | Wrong key for that provider, or wrong `llm_provider` / `llm_base_url` | Check the key and the provider settings |
-| `llm_model is empty` | `enable_llm_review: true` without `llm_model` | Set `llm_model` |
-| AI review ran but no PR comment | Caller job lacks `pull-requests: write`, or a fork PR | Grant it. The review is still in the job summary |
-| AI review says *no output available* for a check | That job crashed before uploading its report | Read that job's log |
-| Secret scan on push to `main` reports a commit that isn't on `main` | You're on `v1.1.0-rc.1` | Move to `v1.1.0-rc.2` or later |
-
----
-
-## Working on this repo
-
-Read [CLAUDE.md](CLAUDE.md) first. In short: one composite action per check,
-language dispatch through a `case` inside each action, `set -euo pipefail`
-in every shell step, clear error messages, SHA-pinned actions, minimal
-permissions, and a comment header on every `action.yml`.
-
-**Run the unit tests** (Node 20+ and bash; no install step):
+Run the unit tests (Node 20+ and bash):
 
 ```bash
 for t in tests/test_*.mjs; do node "$t"; done; bash tests/test_lib.sh
 ```
 
-**Lint the YAML.** `self-check.yml` runs actionlint and shellcheck on every PR
-to this repo. To run actionlint locally, install it (for example
-`winget install rhysd.actionlint`) and run:
+Lint the YAML and shell. `self-check.yml` runs actionlint and shellcheck on
+every PR to this repo. Locally:
 
 ```bash
-actionlint .github/workflows/*.yml
+actionlint
 ```
 
-actionlint can't lint a composite `action.yml` on its own; `self-check.yml`
-pulls each action's `run:` blocks out and shellchecks them instead.
+(`self-check.yml` does not run the unit tests yet, so run them before
+pushing.)
 
-> `self-check.yml` does not run the unit tests yet. Run them locally
-> before pushing.
+**Adding a language** means adding a branch to the `case` in each action,
+extending `scripts/` and `tests/` if a new report format appears, and adding
+`docs/consumers/<language>.md`. It is done only when tested on a real consumer
+repo, with both a passing and a deliberately failing PR for every check.
 
-**Adding a language** means adding a branch to the `case` in each action
-(setup, lint, unit-test, coverage, dependency-scan), extending
-`scripts/` + `tests/` if a new report format appears, and adding a
-`docs/consumers/<language>.md`. A phase is done only when it has been
-validated on a real consumer repo, both the green path and a deliberately
-failing path for every check. See the definition of done in
-[CLAUDE.md](CLAUDE.md).
-
----
-
-## Roadmap
+### Roadmap
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 | JS/TS: lint, unit test, coverage, dependency scan, secret scan | Done (`main`) |
-| 2 | Python: same five checks | Pre-release `v1.1.0-rc.2`, under validation |
-| 2+ | Advisory AI review (`enable_llm_review`) | On `Feature/LLM-Review`; pre-release `v1.1.0-rc.3` pending validation |
+| 1 | JS / TS: lint, tests, coverage, dependency scan, secret scan | Released in `v1.0.0` |
+| 2 | Python: the same five checks | Released in `v1.0.0` |
+| 2+ | Advisory AI review | Released in `v1.0.0` |
 | 3 | Flutter | Not started |
 | 4 | Unity | Not started |
-| later | SAST, IaC scan, LLM PR review (advisory only), SBOM | Not started; policy already defined in [CHECK-POLICY.md](docs/CHECK-POLICY.md) |
+| later | SAST, IaC scan, SBOM | Not started; rules already in [CHECK-POLICY.md](docs/CHECK-POLICY.md) |
+
+Full release notes: [CHANGELOG.md](CHANGELOG.md).
