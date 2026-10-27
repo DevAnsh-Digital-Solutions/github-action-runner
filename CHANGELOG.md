@@ -6,17 +6,18 @@ tag `v1` points at the latest `v1.x.y` (see
 
 ---
 
-## v1.0.0 — DRAFT, not yet tagged
+## v1.0.0 — 2026-10-27
 
-> **Status:** release candidate `v1.1.0-rc.2`. Becomes `v1.0.0` once the
-> validation checklist at the bottom is complete and the release is approved.
-> (The `-rc` tags were named before the first stable version was settled.
-> `v1.0.0` is the first stable release, and the rc tags are its candidates.)
+> Released by the repo owner on 2026-10-27 with some validation items still
+> open (see the checklist at the bottom). The `v1.1.0-rc.*` tags were its
+> release candidates; they were named before the first stable version was
+> settled. `v1` points at this release.
 
 The first stable release of the org's central CI. A consumer repo calls one
 reusable workflow, turns checks on with boolean flags, and gets five
 blocking checks for **JavaScript, TypeScript and Python** with the same
-summaries, annotations and SARIF output everywhere.
+summaries, annotations and SARIF output everywhere, plus an optional,
+advisory **AI review** of each pull request.
 
 ```yaml
 jobs:
@@ -34,7 +35,7 @@ jobs:
 - Inputs: `language`, `working_dir`, `runner_label`, `enable_lint`,
   `enable_unit_test`, `enable_coverage`, `enable_dependency_scan`,
   `enable_secret_scan`, `coverage_threshold` (default `80`),
-  `python_version` (default `3.12`).
+  `python_version` (default `3.12`), and the AI review inputs below.
 - Every check sits behind its own flag. Enabling exactly one check runs
   exactly that check.
 - A `validate-inputs` job fails fast on an unsupported `language` (and lists
@@ -90,6 +91,27 @@ Secret-scan specifics:
   other branches.
 - Matched values are always redacted (`--redact`).
 
+#### Advisory AI review (optional, off by default)
+
+- `enable_llm_review` (default `false`) adds two jobs: `llm-preflight`
+  checks the `ai_token` secret and the provider settings within seconds, and
+  `llm-review` reviews the PR diff together with the lint, unit-test and
+  coverage results, then posts **one** PR comment (updated on each push) with
+  a verdict, a results table and a checkbox per point.
+- Never blocks: both jobs are `continue-on-error`; the review job gets
+  `pull-requests: write` at most. Pull requests only; pushes skip it with a
+  notice.
+- Any model: `llm_provider` (`openai-compatible`, `anthropic`, `gemini`),
+  `llm_base_url`, `llm_model`. Groq, OpenRouter, Ollama, Gemini's OpenAI
+  endpoint etc. work through `openai-compatible`. Validated live with Gemini.
+- Other inputs: `llm_max_output_tokens`, `llm_timeout_seconds`,
+  `llm_max_diff_kb`, `llm_max_findings`, `llm_exclude_paths`. New optional
+  secret: `ai_token`.
+- PR content is treated as untrusted: fenced in the prompt, reply validated
+  against a fixed shape, posted text escaped, mentions and links defused.
+- Scripts `llm-client.mjs` and `llm-review.mjs` with unit tests.
+  `unit-test` also uploads the raw runner report as `unit-test-results`.
+
 #### Security
 
 - Every third-party action pinned to a full commit SHA:
@@ -102,7 +124,8 @@ Secret-scan specifics:
 - Least-privilege `permissions:` on every job (`contents: read`, plus
   `security-events: write` / `actions: read` only where SARIF is uploaded).
 - Inputs and event data reach shell only through `env:`. No
-  `pull_request_target`. No secrets needed beyond `GITHUB_TOKEN`.
+  `pull_request_target`. No secrets needed beyond `GITHUB_TOKEN`, except the
+  optional `ai_token` for the AI review.
 
 #### Repo tooling and docs
 
@@ -135,8 +158,13 @@ Secret-scan specifics:
 - The workflow's internal action refs are pinned to this release's own tag,
   not to whatever ref the consumer called.
 - `self-check.yml` does not run the script unit tests yet. They run locally.
-- Not included yet (later phases): SAST, IaC scan, LLM PR review, SBOM,
-  Flutter, Unity.
+- **Public repositories can't use this release** while this repo is private:
+  GitHub refuses with "workflow was not found" before any job starts.
+- AI review: a wrong `llm_base_url` / `llm_model` passes the token check and
+  only fails in the review job; the review does not read dependency-scan or
+  secret-scan results; PRs from forks and Dependabot get no review (no
+  secrets).
+- Not included yet (later phases): SAST, IaC scan, SBOM, Flutter, Unity.
 
 ### Upgrading
 
@@ -145,15 +173,18 @@ Secret-scan specifics:
 - Private consumers need this repo's Settings → Actions → General → Access
   set to "Accessible from repositories in the organization".
 
-### Validation checklist (must be complete before tagging)
+### Validation status at release
 
-- [ ] `self-check` (actionlint + shellcheck) green on `Feature/Phase-2`
-- [x] Script unit tests pass locally (5 suites)
+- [x] actionlint + shellcheck green (run locally on `Feature/LLM-Review`)
+- [x] Script unit tests pass locally (7 suites)
 - [x] python-private: PR into `main`, all five checks green
 - [x] python-private: push to `dev` runs lint only, green
-- [ ] python-private: push to `main` on rc.2, all five green (confirms the secret-scan fix)
-- [ ] python-private: failing PRs for lint, unit-test, coverage, dependency-scan, secret-scan each fail only their own check
+- [x] ts-private: AI review on every branch with Gemini; comment checked
+      against the code (lint, tests, coverage facts all correct)
+- [x] ts-private: a rejected `AI_TOKEN` is caught by the token check
+- [x] Release approved; merged to `main`
+- [ ] python-private: push to `main`, all five green (confirms the secret-scan fix)
+- [ ] python-private: failing PRs for each check fail only their own check
 - [ ] python-private: manual run with a single check runs only that check
-- [ ] python-public: green PR, plus failing PRs for lint, unit-test, coverage
-- [ ] Summaries, annotations and SARIF artifacts checked as readable on each run
-- [ ] Release approved; `Feature/Phase-2` merged to `main`
+- [ ] AI review: one-branch scoping, missing `AI_TOKEN`, an all-green PR, OpenAI
+- [ ] ~~python-public~~: not possible while this repo is private (see Known limitations)

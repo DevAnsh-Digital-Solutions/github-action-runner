@@ -12,6 +12,11 @@
 # check's own composite action hard-fails them with "not yet implemented
 # in this version" rather than silently skipping or passing.
 #
+# Optional advisory AI review (enable_llm_review, default off): two extra jobs,
+# llm-preflight (verifies the ai_token secret early) and llm-review (reviews
+# the PR diff plus the lint / unit-test / coverage outputs and comments on the
+# PR). Both are continue-on-error, so they can never block a run.
+#
 # Composite action references below use the full
 # DevAnsh-Digital-Solutions/github-action-runner/... form pinned to a ref,
 # NOT a local `./` path. `uses: ./path` always resolves against whatever is
@@ -25,14 +30,11 @@
 # threading the actual caller-supplied ref through to these lines needs
 # follow-up work.
 #
-# !! PRE-RELEASE REF — UPDATE BEFORE MERGING TO main !!
-# On the Feature/Phase-2 branch the references below point at the
-# pre-release tag `@v1.1.0-rc.2`, so a consumer calling this workflow at
-# that same tag runs exactly the actions in this commit (pointing them at
-# @main would silently test the old code). Each new pre-release (rc.2, ...)
-# needs these refs bumped in the commit that is tagged. At release time,
-# change every `@v1.1.0-rc.2` in this file to the final release tag
-# (`@v1.1.0`, or `@v1` once the moving major tag is advanced).
+# RELEASE REF: the references below point at this commit's own release tag
+# (`@v1.0.0`), so a consumer calling `@v1` or `@v1.0.0` runs exactly the
+# actions released with this workflow. Every release or pre-release must bump
+# them to its own tag in the commit that gets tagged (see README →
+# Versioning and releases).
 name: Central CI
 
 on:
@@ -87,6 +89,55 @@ on:
         type: string
         required: false
         default: '3.12'
+      enable_llm_review:
+        description: "Run the advisory AI review of the PR (needs the ai_token secret and llm_model). Never blocks. Pull requests only. Default false: it costs money and sends the diff to an LLM provider."
+        type: boolean
+        required: false
+        default: false
+      llm_provider:
+        description: "LLM API wire format: openai-compatible (OpenAI, Gemini's OpenAI endpoint, Groq, OpenRouter, Mistral, Ollama, ...), anthropic, or gemini (native)."
+        type: string
+        required: false
+        default: 'openai-compatible'
+      llm_base_url:
+        description: "LLM API base URL. Empty uses the provider's standard URL. Set it for OpenAI-compatible providers other than OpenAI, e.g. https://generativelanguage.googleapis.com/v1beta/openai for Gemini."
+        type: string
+        required: false
+        default: ''
+      llm_model:
+        description: "Model name exactly as the provider expects it (e.g. gpt-4o, gemini-2.5-flash, claude-sonnet-5-5). Required when enable_llm_review is true."
+        type: string
+        required: false
+        default: ''
+      llm_max_output_tokens:
+        description: "Output token limit. Sent only to Anthropic, which requires one."
+        type: number
+        required: false
+        default: 4096
+      llm_timeout_seconds:
+        description: "Per-request timeout for the LLM call, in seconds."
+        type: number
+        required: false
+        default: 120
+      llm_max_diff_kb:
+        description: "Maximum PR diff size sent to the model, in KB. Larger diffs are cut and the comment says so."
+        type: number
+        required: false
+        default: 200
+      llm_max_findings:
+        description: "Maximum number of review points in the PR comment."
+        type: number
+        required: false
+        default: 20
+      llm_exclude_paths:
+        description: "Comma or newline separated globs of files kept out of the diff sent to the model."
+        type: string
+        required: false
+        default: 'package-lock.json,pnpm-lock.yaml,yarn.lock,poetry.lock,Pipfile.lock,*.min.js,*.map,dist/**,build/**,coverage/**'
+    secrets:
+      ai_token:
+        description: "API key for the LLM provider, normally the repo's AI_TOKEN secret. Required only when enable_llm_review is true. Map your AI_TOKEN secret to ai_token in the calling job's secrets block, or use secrets: inherit."
+        required: false
 
 # Default to least privilege; individual jobs narrow further where they can
 # and widen only where a specific step (e.g. SARIF upload) needs it.
@@ -156,13 +207,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Lint
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -178,13 +229,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Unit test
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -200,13 +251,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Coverage
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -225,13 +276,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Dependency scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@v1.0.0
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -253,6 +304,71 @@ jobs:
           # and for the pull_request mode to be able to diff base..head.
           fetch-depth: 0
       - name: Secret scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@v1.1.0-rc.2
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@v1.0.0
         with:
           working_dir: ${{ inputs.working_dir }}
+
+  # --- Advisory AI review (two jobs) -------------------------------------
+  # Both jobs are continue-on-error: a missing token, a rejected token or a
+  # provider outage turns the LLM job red but never fails the run or blocks
+  # any other check (docs/CHECK-POLICY.md: LLM review is advisory). The
+  # review job's `if` keys off the preflight job's `ready` OUTPUT rather than
+  # its result, so it runs only when preflight actually passed.
+  llm-preflight:
+    name: AI Review (token check)
+    if: inputs.enable_llm_review
+    needs: validate-inputs
+    runs-on: ${{ inputs.runner_label }}
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.preflight.outputs.ready }}
+    steps:
+      - name: Preflight
+        id: preflight
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/llm-review@v1.0.0
+        with:
+          mode: preflight
+          language: ${{ inputs.language }}
+          ai_token: ${{ secrets.ai_token }}
+          llm_provider: ${{ inputs.llm_provider }}
+          llm_base_url: ${{ inputs.llm_base_url }}
+          llm_model: ${{ inputs.llm_model }}
+
+  llm-review:
+    name: AI Review
+    # !cancelled() instead of the implicit success(): the review must run when
+    # lint/tests/coverage FAILED, since explaining those failures is the point.
+    if: ${{ !cancelled() && inputs.enable_llm_review && needs.llm-preflight.outputs.ready == 'true' }}
+    needs: [llm-preflight, lint, unit-test, coverage]
+    runs-on: ${{ inputs.runner_label }}
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write # to post/update the review comment; never contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the PR diff (base...head) can be computed.
+          fetch-depth: 0
+      - name: Review
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/llm-review@v1.0.0
+        with:
+          mode: review
+          language: ${{ inputs.language }}
+          working_dir: ${{ inputs.working_dir }}
+          ai_token: ${{ secrets.ai_token }}
+          llm_provider: ${{ inputs.llm_provider }}
+          llm_base_url: ${{ inputs.llm_base_url }}
+          llm_model: ${{ inputs.llm_model }}
+          llm_max_output_tokens: ${{ inputs.llm_max_output_tokens }}
+          llm_timeout_seconds: ${{ inputs.llm_timeout_seconds }}
+          llm_max_diff_kb: ${{ inputs.llm_max_diff_kb }}
+          llm_max_findings: ${{ inputs.llm_max_findings }}
+          llm_exclude_paths: ${{ inputs.llm_exclude_paths }}
+          lint_result: ${{ needs.lint.result }}
+          unit_test_result: ${{ needs.unit-test.result }}
+          coverage_result: ${{ needs.coverage.result }}
+          coverage_threshold: ${{ inputs.coverage_threshold }}

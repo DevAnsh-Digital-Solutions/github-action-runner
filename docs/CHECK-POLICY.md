@@ -14,7 +14,7 @@ this file in the same PR.
 | Dependency scan (SCA) | Every PR + nightly on `main` | Blocking on HIGH/CRITICAL |
 | SAST | PRs targeting `main`/`release/*` + nightly | Blocking on CRITICAL, advisory below |
 | IaC scan | PRs touching IaC paths only | Blocking |
-| LLM PR review | PRs targeting `main` only | Advisory — never blocking |
+| LLM PR review | PRs, on the branches a consumer opts in (recommended: targeting `main`) | Advisory — never blocking |
 | SBOM generation | Push/tag on `main` | Non-blocking artifact |
 
 ## Why each row is scoped the way it is
@@ -50,10 +50,17 @@ touched paths keeps the check cheap and relevant; it blocks because
 infrastructure misconfiguration (e.g. an open security group) is as
 consequential as an application bug and deterministic to detect.
 
-**LLM PR review** runs only on PRs targeting `main` and is always advisory,
-never blocking. LLM output is non-deterministic — gating merges on it would
-make CI flaky and erode trust in the check. It still adds value as a
-second set of eyes on the PRs that matter most.
+**LLM PR review** runs only on pull requests, only where a consumer opts in
+(`enable_llm_review`, default `false`), and is always advisory, never
+blocking. Which target branches get it is one expression in the consumer's
+own `ci.yml` (for example `github.base_ref == 'main'`), so the central
+workflow stays branch-agnostic. The recommended scope is PRs targeting `main`
+(the PRs that matter most, and the cost stays bounded), but a repo may enable
+it for every branch or any subset. LLM output is non-deterministic — gating
+merges on it would make CI flaky and erode trust in the check. It reviews the
+PR diff together with the lint, unit-test and coverage results, and posts one
+comment. A missing or rejected `AI_TOKEN` is reported by a separate
+token-check job and fails only that LLM job; no other check is affected.
 
 **SBOM generation** runs on push/tag to `main` and produces a non-blocking
 artifact. It's a compliance/traceability output, not a gate — generating it

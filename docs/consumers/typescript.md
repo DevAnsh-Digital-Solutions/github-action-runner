@@ -13,8 +13,9 @@ from the trigger configuration and job structure below, not from anything
 inside `central-ci.yml` — this repo's reusable workflow stays branch-agnostic
 by design, per [CLAUDE.md](../../CLAUDE.md)'s architecture rules.
 
-SAST, IaC scan, LLM PR review, and SBOM generation are not yet implemented
-(they land in later phases); they're omitted from every variant below.
+SAST, IaC scan and SBOM generation are not yet implemented
+(they land in later phases); they are omitted from every variant below. The
+optional advisory AI review is described in the last section.
 
 ## Variant 1: lint-only repo
 
@@ -153,3 +154,44 @@ jobs:
   as a devDependency; Jest's coverage collection is built in.
 - The secret-scan job's checkout uses `fetch-depth: 0` internally (full
   history) — you don't need to configure that yourself.
+
+## Optional: advisory AI review
+
+Turn on an LLM review of the PR that explains the lint, unit-test and
+coverage results and reviews the diff. It comments on the PR (one comment,
+updated on each push) and **never blocks**. Full details are in the
+[README](../../README.md#ai-review-advisory).
+
+Setup: add a repository secret named `AI_TOKEN` with your provider's API
+key, then add the flag, a model name and the secret mapping. The review
+only runs on pull requests; the expression on `enable_llm_review` chooses
+which target branches.
+
+```yaml
+jobs:
+  pr-checks:
+    if: github.event_name == 'pull_request'
+    uses: DevAnsh-Digital-Solutions/github-action-runner/.github/workflows/central-ci.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write # lets the review post its comment
+      security-events: write
+      actions: read
+    with:
+      language: ts
+      # every PR:               true
+      # one target branch:      ${{ github.base_ref == 'develop' }}
+      # several target branches: ${{ contains(fromJSON('["main","develop"]'), github.base_ref) }}
+      enable_llm_review: ${{ github.base_ref == 'develop' }}
+      llm_provider: openai-compatible   # or anthropic / gemini
+      llm_model: gpt-4o
+      # Gemini through the OpenAI-compatible endpoint instead:
+      #   llm_base_url: https://generativelanguage.googleapis.com/v1beta/openai
+      #   llm_model: gemini-2.5-flash
+    secrets:
+      ai_token: ${{ secrets.AI_TOKEN }}   # or: secrets: inherit
+```
+
+If `AI_TOKEN` is missing or rejected, the `AI Review (token check)` job
+fails within seconds with a message saying what to fix; the other checks
+carry on unaffected.
