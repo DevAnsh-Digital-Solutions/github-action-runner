@@ -2,7 +2,7 @@
 
 All notable changes to this repo. Versions follow `vX.Y.Z`; the moving major
 tag `v1` points at the latest `v1.x.y` (see
-[README → Versioning and releases](README.md#versioning-and-releases)).
+[README → Versions](README.md#versions)).
 
 ---
 

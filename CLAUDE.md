@@ -57,7 +57,7 @@ This table is the source of truth. Implement defaults to match it.
 | Dependency scan (SCA) | Every PR + nightly on `main` | Blocking on HIGH/CRITICAL |
 | SAST | PRs targeting `main`/`release/*` + nightly | Blocking on CRITICAL, advisory below |
 | IaC scan | PRs touching IaC paths only | Blocking |
-| LLM PR review | PRs targeting `main` only | **Advisory — never blocking** |
+| LLM PR review | PRs only, on the target branches each consumer opts in (`enable_llm_review`, default off; recommended: PRs targeting `main`) | **Advisory — never blocking** |
 | SBOM generation | Push/tag on `main` | Non-blocking artifact |
 
 Rationale to preserve: deterministic tools block; non-deterministic (LLM) tools comment only. Expensive/slow checks are reserved for `main`-targeting PRs so feature-branch iteration stays fast.
@@ -66,7 +66,8 @@ Rationale to preserve: deterministic tools block; non-deterministic (LLM) tools 
 
 - Tag releases `vX.Y.Z`. Maintain a moving major tag (`v1`) pointing at the latest compatible release.
 - Breaking change = new major tag. Keep the previous major working.
-- Internal `uses:` references between this repo's own workflow and actions use the same ref the consumer called.
+- Internal `uses:` references from `central-ci.yml` to this repo's actions are pinned to the release's own tag (`uses:` can't take an expression, and a local `./` path would resolve inside the consumer's checkout). Every release or pre-release bumps them to its own tag in the commit that gets tagged.
+- This repo is private, so only private/internal repos in the org can call it; public repos fail with "workflow was not found" before any job runs. Never validate a phase on a public consumer.
 
 ## Testing expectations
 

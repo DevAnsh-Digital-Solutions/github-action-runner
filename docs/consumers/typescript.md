@@ -1,10 +1,11 @@
 # Consumer workflow: TypeScript / JavaScript
 
 Copy one of the variants below into your repo as `.github/workflows/ci.yml`.
-Replace `@v1` with the ref you want to pin to. **`v1` has not been tagged
-yet**, so use the current pre-release (`@v1.1.0-rc.2`) for now; see
-[Status and versions](../../README.md#status-and-versions) and
-[Versioning](../../README.md#versioning-and-releases).
+`@v1` always gives you the latest `v1.x.y`; pin `@v1.0.0` instead if you
+want nothing to change until you update it. Before you start, check
+[Will it work for my repo?](../../README.md#1-will-it-work-for-my-repo) —
+public repos can't use this CI. More scenarios (AI review, monorepos,
+per-branch rules) are in the [README](../../README.md#3-pick-your-scenario-copy-paste).
 
 All three variants implement the Phase-1 rows of
 [docs/CHECK-POLICY.md](../CHECK-POLICY.md) — lint, unit tests, coverage,
