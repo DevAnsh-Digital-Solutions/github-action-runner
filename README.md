@@ -447,7 +447,7 @@ More language-specific examples: [docs/consumers/typescript.md](docs/consumers/t
 | **Your `ci.yml` must always grant all four permissions** (`contents: read`, `security-events: write`, `actions: read`, `pull-requests: write`) — even if you only use one check. GitHub checks every job's permissions *before* anything runs, including jobs for checks you turned off. Each job still only gets what it needs. | **Nothing runs.** The run fails at once with *"Invalid workflow file … is requesting 'pull-requests: write', but is only allowed 'pull-requests: none'"* (or the same for `security-events`). |
 | **AI review needs** `AI_TOKEN` and `llm_model`. | The *AI Review (token check)* job fails with a message naming what's missing. Your other checks are not affected. |
 | **AI review only runs on pull requests.** | On a push it is skipped with a notice. |
-| **AI review reads lint, tests and coverage.** It does not read the dependency or secret scan. | If those three are off, it reviews only the code changes. |
+| **AI review reads every check that ran** (lint, tests, coverage, dependency scan, secret scan). | Checks you turned off show as "not run"; if all are off, it reviews only the code changes. |
 | **Every check except the AI review is on by default.** | Leaving a flag out means *on*. Write `false` to turn a check off. |
 | **One check alone is fine.** Turning on just one check runs just that check. | — |
 
@@ -455,8 +455,8 @@ More language-specific examples: [docs/consumers/typescript.md](docs/consumers/t
 
 ## 5. Setting up the AI review
 
-The AI review sends the pull request's code changes, plus the lint, test and
-coverage results, to an AI model. It then posts **one comment** on the PR with
+The AI review sends the pull request's code changes, plus the results of the
+other checks, to an AI model. It then posts **one comment** on the PR with
 a verdict and a to-do list. It **never blocks** a merge.
 
 ### Step 1: get an API key and save it as a secret
@@ -505,38 +505,51 @@ flowchart LR
     lint["Lint"] --> rev
     ut["Unit Test"] --> rev
     cov["Coverage"] --> rev
+    dep["Dependency Scan"] --> rev
+    sec["Secret Scan"] --> rev
     rev["AI Review<br/>results + code changes → AI → one PR comment"]
 ```
 
 1. **AI Review (token check)** runs first, in a few seconds. If the key is
    missing or wrong, it stops here with a clear message — before any code is
    sent anywhere.
-2. Lint, tests and coverage run as usual.
-3. When they finish (**pass or fail**), **AI Review** sends the results and the
-   code changes to the model and posts the comment.
+2. All the other checks run as usual.
+3. When they finish (**pass or fail**), **AI Review** sends their results and
+   the code changes to the model and posts the comment. From the secret scan
+   it only sends the rule name, file and line — **never the secret itself**.
 
 ### What the comment looks like
 
 ```text
 🤖 AI review
-Verdict: ❌ Needs changes — 1 high · 2 medium
+Verdict: ❌ Needs changes — 2 high · 1 medium
 
-| Check      | Result | Details                          |
-| Lint       | ✅     | no findings                      |
-| Unit tests | ✅     | 12 passed, 0 failed (12 total)   |
-| Coverage   | ❌     | 66.67% lines vs 80% required     |
+| Check           | Result | Details                                  |
+| Lint            | ✅     | no findings                              |
+| Unit tests      | ✅     | 12 passed, 0 failed (12 total)           |
+| Coverage        | ❌     | 66.67% lines vs 80% required             |
+| Dependency scan | ❌     | 1 vulnerable finding(s): 1 high          |
+| Secret scan     | ✅     | no secrets found                         |
 
 1. Lint          ✅ Nothing to flag.
 2. Unit tests    ✅ Nothing to flag.
 3. Coverage
    - [ ] 🔴 High · src/multiply.ts — no tests cover this file
          💡 Fix: add a test that calls multiply()
-4. Code review
+4. Security (dependencies and secrets)
+   - [ ] 🔴 High · requirements.txt — urllib3 1.26.4 has GHSA-q2q7-5pp4-w6pg
+         💡 Fix: upgrade to 1.26.5 or later
+5. Code review
    - [ ] 🟠 Medium · .github/workflows/ci.yml:4 — push trigger removed
          💡 Fix: …
 ```
 
-- The **results table** comes from the real check output, not from the AI.
+- The **results table** and the **verdict** come from the real check results,
+  not from the AI: if any check failed, the verdict is "Needs changes" no
+  matter what the AI says, and a failed check is never shown as "Nothing to
+  flag".
+- The AI must turn every concern into a checkbox item, and must flag anything
+  that looks like a credential as **High** — even if the code says it's fake.
 - Each point is a **checkbox** you can tick as you fix it.
 - There is **one comment per PR**. Each new push **edits** that same comment
   (it shows "edited"); GitHub does not send a notification for edits, and
@@ -713,7 +726,7 @@ flowchart LR
         validate --> lint & unit & dep & sec & pre
         unit -- "coverage report" --> cov
         pre --> ai
-        lint & unit & cov --> ai
+        lint & unit & cov & dep & sec --> ai
     end
 
     ci -- "uses: …central-ci.yml@v1" --> central
@@ -822,7 +835,8 @@ jobs:
 | `@v1` | **Recommended.** Always the latest `v1.x.y`; you get fixes automatically. |
 | `@v1.0.0` | You want nothing to change until you update it yourself. |
 | `@main` | Don't — it can change at any time. |
-| `@v1.1.0-rc.*` | Don't — old test versions from before `v1.0.0`. |
+| `@v1.1.0-rc.1` … `rc.3` | Don't — old test versions from before `v1.0.0`. |
+| `@v1.1.0-rc.4` | Test version of `v1.1.0` (AI review reads every check). Only for testing. |
 
 A breaking change gets a new major version (`v2`); `v1` keeps working.
 

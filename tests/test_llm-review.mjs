@@ -19,6 +19,8 @@ import {
   extractJson,
   validateReview,
   sanitize,
+  summarizeDependencies,
+  summarizeSecrets,
   checkStatuses,
   verdict,
   renderMarkdown,
@@ -288,7 +290,8 @@ test('renderMarkdown: marker, status table, numbered sections, checkboxes, linke
   assert.match(md, /\| Lint \| ❌ \|/);
   assert.match(md, /\| Unit tests \| ✅ \|/);
   assert.match(md, /### 1\. Lint/);
-  assert.match(md, /### 4\. Code review/);
+  assert.match(md, /### 4\. Security/);
+  assert.match(md, /### 5\. Code review/);
   assert.match(md, /- \[ \] 🔴 \*\*High\*\* · \[`src\/a\.ts:1`\]\(https:\/\/github\.com\/o\/r\/blob\/abcdef1234567\/src\/a\.ts#L1\) — Null deref/);
   assert.match(md, /💡 \*\*Fix:\*\* Guard it\./);
   assert.match(md, /Nothing to flag/); // the tests section has no items
@@ -329,6 +332,105 @@ test('renderMarkdown: stays under the GitHub comment limit', () => {
   const items = Array.from({ length: 40 }, (_, i) => ({ severity: 'low', title: `t${i}`, detail: 'd'.repeat(1200), fix: 'f'.repeat(800) }));
   const review = validateReview(good({ code: { assessment: '', items } }), { maxFindings: 40 });
   assert.ok(renderMarkdown({ review, checks: checksFixture(), diff: diffFixture(), meta }).length < 65000);
+});
+
+// --- dependency and secret scans ---
+
+const OSV = JSON.stringify({
+  results: [{
+    packages: [{
+      package: { name: 'urllib3', version: '1.26.4', ecosystem: 'PyPI' },
+      vulnerabilities: [{
+        id: 'GHSA-q2q7-5pp4-w6pg', aliases: ['CVE-2021-33503'], database_specific: { severity: 'HIGH' },
+        affected: [{ package: { name: 'urllib3', ecosystem: 'PyPI' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '1.26.5' }] }] }],
+      }],
+    }],
+  }],
+});
+
+const GITLEAKS_SARIF = JSON.stringify({
+  version: '2.1.0',
+  runs: [{
+    results: [{
+      ruleId: 'aws-access-token',
+      level: 'error',
+      message: { text: 'aws-access-token has detected secret for file src/ci_fixture/settings.py: AKIAREDACTEDVALUE' },
+      locations: [{ physicalLocation: { artifactLocation: { uri: 'src/ci_fixture/settings.py' }, region: { startLine: 7 } } }],
+    }],
+  }],
+});
+
+const cleanChecks = () => checksFixture({ lint: { jobResult: 'success', data: { total: 0, errors: 0, warnings: 0, findings: [] } } });
+
+test('summarizeDependencies: package, installed, advisory, fix, counts', () => {
+  const d = summarizeDependencies(OSV);
+  assert.equal(d.total, 1);
+  assert.equal(d.counts.HIGH, 1);
+  assert.deepEqual(d.findings[0], { severity: 'HIGH', package: 'urllib3', installed: '1.26.4', advisory: 'GHSA-q2q7-5pp4-w6pg', fixedIn: '1.26.5' });
+  assert.equal(summarizeDependencies('{"results":[]}').total, 0);
+});
+
+test('summarizeSecrets: rule, file and line only — the message (which can describe the match) is dropped', () => {
+  const s = summarizeSecrets(GITLEAKS_SARIF, { workspace: '/w' });
+  assert.equal(s.total, 1);
+  assert.deepEqual(s.findings[0], { rule: 'aws-access-token', file: 'src/ci_fixture/settings.py', line: 7 });
+  assert.ok(!JSON.stringify(s).includes('AKIA'));
+});
+
+test('checkStatuses: dependency and secret scans get their own rows', () => {
+  const s = checkStatuses(checksFixture({
+    dependencies: { jobResult: 'failure', data: summarizeDependencies(OSV) },
+    secrets: { jobResult: 'failure', data: summarizeSecrets(GITLEAKS_SARIF) },
+  }));
+  assert.equal(s.dependencies.state, 'fail');
+  assert.match(s.dependencies.text, /1 vulnerable finding\(s\): 1 high/);
+  assert.equal(s.secrets.state, 'fail');
+  assert.match(s.secrets.text, /1 possible secret\(s\) found \(values hidden\)/);
+  const below = checkStatuses(checksFixture({ dependencies: { jobResult: 'success', data: summarizeDependencies(OSV) } }));
+  assert.equal(below.dependencies.state, 'warn'); // findings under the threshold don't fail the job
+  const none = checkStatuses(checksFixture());
+  assert.equal(none.dependencies.state, 'skipped');
+  assert.equal(none.secrets.state, 'skipped');
+});
+
+test('verdict: a failed secret scan means "Needs changes" even when the model lists nothing (PR #14 case)', () => {
+  const empty = validateReview(good({ lint: { assessment: '', items: [] } }), { maxFindings: 10 });
+  const checks = cleanChecks();
+  checks.secrets = { jobResult: 'failure', data: summarizeSecrets(GITLEAKS_SARIF) };
+  assert.equal(verdict(checkStatuses(checks), empty).text, 'Needs changes');
+  assert.equal(verdict(checkStatuses(cleanChecks()), empty).text, 'Looks good');
+});
+
+test('renderMarkdown: a failed check with no AI points never shows "Nothing to flag"', () => {
+  const checks = cleanChecks();
+  checks.secrets = { jobResult: 'failure', data: summarizeSecrets(GITLEAKS_SARIF) };
+  checks.dependencies = { jobResult: 'failure', data: summarizeDependencies(OSV) };
+  const review = validateReview(good({ lint: { assessment: '', items: [] } }), { maxFindings: 10 });
+  const md = renderMarkdown({ review, checks, diff: diffFixture(), meta });
+  assert.match(md, /\| Dependency scan \| ❌ \|/);
+  assert.match(md, /\| Secret scan \| ❌ \|/);
+  assert.match(md, /### 4\. Security[\s\S]*❌ Dependency scan and Secret scan failed, but the AI listed no points/);
+  assert.match(md, /### 1\. Lint\n\n✅ Nothing to flag\./); // lint really passed
+  assert.match(md, /Verdict: ❌ Needs changes/);
+});
+
+test('renderMarkdown: security items link to files the secret scan reported', () => {
+  const checks = cleanChecks();
+  checks.secrets = { jobResult: 'failure', data: summarizeSecrets(GITLEAKS_SARIF) };
+  const review = validateReview(good({ security: { assessment: 'A credential is committed.', items: [{ severity: 'high', file: 'src/ci_fixture/settings.py', line: 7, title: 'AWS key committed', fix: 'Remove and rotate.' }] } }), { maxFindings: 10 });
+  const md = renderMarkdown({ review, checks, diff: diffFixture(), meta });
+  assert.match(md, /- \[ \] 🔴 \*\*High\*\* · \[`src\/ci_fixture\/settings\.py:7`\]/);
+});
+
+test('buildPrompt: rules for concerns-as-items, credentials labelled fake, scanner severities, no secret values', () => {
+  const diff = prepareDiff(DIFF, { excludeGlobs: [], maxBytes: 100000 });
+  const p = buildPrompt({ language: 'python', checks: {}, diff, maxFindings: 5, nonce: 'n' });
+  assert.match(p.system, /Never describe a concern\s+in the assessment while leaving "items" empty/);
+  assert.match(p.system, /even if a comment, name or file says it is fake/);
+  assert.match(p.system, /CRITICAL or HIGH -> high/);
+  assert.match(p.system, /Never repeat any part of a secret/);
+  assert.match(p.system, /4\. security:/);
+  assert.match(p.system, /"security"/);
 });
 
 // --- posting ---

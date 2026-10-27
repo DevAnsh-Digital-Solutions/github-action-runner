@@ -6,6 +6,37 @@ tag `v1` points at the latest `v1.x.y` (see
 
 ---
 
+## v1.1.0 — not released yet (test version `v1.1.0-rc.4`)
+
+> `rc.4` because `v1.1.0-rc.1` … `rc.3` already exist: they were the
+> candidates for `v1.0.0`, tagged before that version name was settled.
+
+AI review fixes found while validating `v1.0.0` on python-private (PRs #13,
+#14). No input or permission changes; consumers on `@v1` get this once
+`v1.1.0` is released and `v1` moves.
+
+- **The AI review now reads the dependency scan and secret scan too.** Two
+  new rows in the results table, a new **Security** section, and the review
+  job waits for both scans. Dependency findings carry package, installed
+  version, advisory and fixed version. From the secret scan only the rule,
+  file and line are used — never the (already redacted) message or any part
+  of a secret.
+- **The verdict follows the checks.** A failed secret or dependency scan
+  now means "Needs changes" (#14 said "Looks good" on a committed AWS key).
+- **No "Nothing to flag" under a failed check.** If a check failed and the
+  model listed no points for it, the section says so instead.
+- **Stricter prompt:** every concern in an assessment must also be a
+  checkbox item; anything shaped like a credential is High even when the
+  code labels it fake or a test value; dependency items take the scanner's
+  severity (#13 rated a HIGH advisory "Medium").
+- `dependency-scan` also uploads osv-scanner's JSON as the
+  `dependency-scan-results` artifact (additive). `llm-review` has two new
+  inputs, `dependency_scan_result` and `secret_scan_result`, wired by
+  `central-ci.yml`.
+- Tests: 7 new cases in `tests/test_llm-review.mjs` (35 total).
+
+---
+
 ## v1.0.0 — 2026-10-27
 
 > Released by the repo owner on 2026-10-27 with some validation items still

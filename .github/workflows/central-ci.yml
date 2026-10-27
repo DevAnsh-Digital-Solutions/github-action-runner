@@ -14,7 +14,7 @@
 #
 # Optional advisory AI review (enable_llm_review, default off): two extra jobs,
 # llm-preflight (verifies the ai_token secret early) and llm-review (reviews
-# the PR diff plus the lint / unit-test / coverage outputs and comments on the
+# the PR diff plus every other check's output and comments on the
 # PR). Both are continue-on-error, so they can never block a run.
 #
 # Composite action references below use the full
@@ -30,8 +30,8 @@
 # threading the actual caller-supplied ref through to these lines needs
 # follow-up work.
 #
-# RELEASE REF: the references below point at this commit's own release tag
-# (`@v1.0.0`), so a consumer calling `@v1` or `@v1.0.0` runs exactly the
+# RELEASE REF: the references below point at this commit's own tag
+# (currently `@v1.1.0-rc.4`), so a consumer calling that tag runs exactly the
 # actions released with this workflow. Every release or pre-release must bump
 # them to its own tag in the commit that gets tagged (see README →
 # Under the hood → Versions).
@@ -207,13 +207,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Lint
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/lint@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -229,13 +229,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Unit test
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/unit-test@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -251,13 +251,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Coverage
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/coverage@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -276,13 +276,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/setup@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
           python_version: ${{ inputs.python_version }}
       - name: Dependency scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/dependency-scan@v1.1.0-rc.4
         with:
           language: ${{ inputs.language }}
           working_dir: ${{ inputs.working_dir }}
@@ -304,7 +304,7 @@ jobs:
           # and for the pull_request mode to be able to diff base..head.
           fetch-depth: 0
       - name: Secret scan
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/secret-scan@v1.1.0-rc.4
         with:
           working_dir: ${{ inputs.working_dir }}
 
@@ -327,7 +327,7 @@ jobs:
     steps:
       - name: Preflight
         id: preflight
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/llm-review@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/llm-review@v1.1.0-rc.4
         with:
           mode: preflight
           language: ${{ inputs.language }}
@@ -339,9 +339,9 @@ jobs:
   llm-review:
     name: AI Review
     # !cancelled() instead of the implicit success(): the review must run when
-    # lint/tests/coverage FAILED, since explaining those failures is the point.
+    # the other checks FAILED, since explaining those failures is the point.
     if: ${{ !cancelled() && inputs.enable_llm_review && needs.llm-preflight.outputs.ready == 'true' }}
-    needs: [llm-preflight, lint, unit-test, coverage]
+    needs: [llm-preflight, lint, unit-test, coverage, dependency-scan, secret-scan]
     runs-on: ${{ inputs.runner_label }}
     continue-on-error: true
     permissions:
@@ -354,7 +354,7 @@ jobs:
           # Full history so the PR diff (base...head) can be computed.
           fetch-depth: 0
       - name: Review
-        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/llm-review@v1.0.0
+        uses: DevAnsh-Digital-Solutions/github-action-runner/.github/actions/llm-review@v1.1.0-rc.4
         with:
           mode: review
           language: ${{ inputs.language }}
@@ -371,4 +371,6 @@ jobs:
           lint_result: ${{ needs.lint.result }}
           unit_test_result: ${{ needs.unit-test.result }}
           coverage_result: ${{ needs.coverage.result }}
+          dependency_scan_result: ${{ needs.dependency-scan.result }}
+          secret_scan_result: ${{ needs.secret-scan.result }}
           coverage_threshold: ${{ inputs.coverage_threshold }}
