@@ -6,7 +6,8 @@
 #       as the "coverage-report" workflow artifact, which
 #       .github/actions/coverage/ downloads and parses — coverage is a
 #       pure parser with no test-running inputs of its own, so this is the
-#       only place a coverage file gets produced.
+#       only place a coverage file gets produced. The raw test report is also
+#       uploaded as the "unit-test-results" artifact for the LLM review.
 #       (js/ts write lcov + json-summary under coverage/; python writes
 #       Cobertura XML to coverage/coverage.xml via pytest-cov.)
 # Languages: js, ts, python. flutter/unity hard-fail as not yet implemented;
@@ -261,6 +262,22 @@ runs:
         name: coverage-report
         path: ${{ inputs.working_dir }}/coverage/
         if-no-files-found: warn # a custom test_command (or python without pytest-cov) may not produce coverage/ at all
+        retention-days: 7
+
+    - name: Upload test results artifact
+      # The raw runner report (Jest/Vitest JSON or pytest JUnit XML), so the
+      # advisory LLM review (.github/actions/llm-review/) can name the failing
+      # tests. Only the report matching the runner that ran exists; the other
+      # two paths are simply absent.
+      if: steps.classify.outputs.outcome != 'crash'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: unit-test-results
+        path: |
+          ${{ inputs.working_dir }}/jest-results.json
+          ${{ inputs.working_dir }}/vitest-results.json
+          ${{ inputs.working_dir }}/pytest-results.xml
+        if-no-files-found: ignore # a custom test_command writes no structured report
         retention-days: 7
 
     - name: Enforce test result
